@@ -19,7 +19,7 @@ It only sets **mode and setpoint** on your existing climate entities. The splits
 ## Install (HACS)
 
 1. HACS → ⋮ (top right) → **Custom repositories**
-2. Repository: `https://github.com/YOUR_GITHUB_USERNAME/comfort-pilot`, Type: **Integration** → Add
+2. Repository: `https://github.com/jonnnyb/comfort-pilot`, Type: **Integration** → Add
 3. Find **Comfort Pilot** in HACS → **Download**
 4. Restart Home Assistant
 5. Settings → Devices & services → **Add integration** → Comfort Pilot
