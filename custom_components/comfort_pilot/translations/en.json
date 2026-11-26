@@ -98,6 +98,8 @@
           "solar_margin": "Grid import tolerated before dropping comfort",
           "precondition_hours": "Pre-cool on spare solar this long before a rule",
           "hot_day": "Hot day (pre-cool 2 hours earlier) at forecast high of",
+          "start_margin": "Start cooling once a room is this far above its setpoint (heating: below)",
+          "stop_margin": "Stop cooling once a room is this far below its setpoint (heating: above)",
           "fresh_air_delta": "Fresh air alert when outside is cooler by",
           "fresh_air_min_indoor": "Only send fresh air alerts when inside is at least",
           "hold_minutes": "Manual changes are respected for",

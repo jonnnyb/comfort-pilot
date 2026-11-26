@@ -93,6 +93,10 @@ Room, rule and settings changes apply immediately, without restarting the integr
 - **Confirm occupancy after** (default 3 min): motion has to continue this long before a room counts as occupied, so walking through doesn't start the AC. Set 0 to react to the first motion.
 - **Stay occupied after last motion** (default 20 min): covers sitting still. Rooms with only presence sensors use 5 minutes at most.
 
+### Starting and stopping
+
+A unit only starts once its room is 0.5° past the setpoint (warmer when cooling, colder when heating), and stops once the room is 1.5° beyond it the other way. So an occupied room that's already comfortable stays off, and a running unit isn't switched off the moment it reaches temperature. Both margins are in Settings.
+
 ### Protecting the units
 
 Once Comfort Pilot turns a unit on it keeps it running for at least 10 minutes, and once off it stays off for at least 5 (both adjustable in Settings). Window open, fresh air mode, Off, Away and safety limits still act straight away, and so do your own mode changes.

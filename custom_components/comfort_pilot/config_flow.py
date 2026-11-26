@@ -398,6 +398,8 @@ class ComfortPilotOptionsFlow(OptionsFlow):
                 vol.Required("solar_margin", default=d("solar_margin", 250)): _number(0, 3000, 50, "W"),
                 vol.Required("precondition_hours", default=d("precondition_hours", 2)): _number(0, 8, 0.5, "h"),
                 vol.Required("hot_day", default=d("hot_day", 35)): _temp(25, 48),
+                vol.Required("start_margin", default=d("start_margin", 0.5)): _number(0, 3, 0.5, "°C"),
+                vol.Required("stop_margin", default=d("stop_margin", 1.5)): _number(0, 5, 0.5, "°C"),
                 vol.Required("fresh_air_delta", default=d("fresh_air_delta", 2)): _number(0.5, 10, 0.5, "°C"),
                 vol.Required("fresh_air_min_indoor", default=d("fresh_air_min_indoor", 24)): _temp(15, 32),
                 vol.Required(SET_HOLD_MINUTES, default=current.get(SET_HOLD_MINUTES, DEFAULT_HOLD_MINUTES)): _number(10, 720, 10, "min"),

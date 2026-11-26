@@ -246,6 +246,8 @@ class Settings:
     fresh_air_min_indoor: float = 24.0  # only suggest when inside is at least this warm
     fresh_air_close_margin: float = 0.5  # suggest closing up when outside is this much warmer
     neutral_trigger: float = 1.0  # in neutral season, act if a room is this far outside its band
+    start_margin: float = 0.5  # start cooling only above setpoint + this (heating: below setpoint - this)
+    stop_margin: float = 1.5  # stop cooling once below setpoint - this (heating: above setpoint + this)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "Settings":
@@ -337,6 +339,23 @@ def _setpoint(hvac: str, level: str, cfg: RoomConfig, st: RoomState, rule_target
     return round_to_step(value, st)
 
 
+def needs_running(hvac: str, target: float | None, st: RoomState, settings: Settings) -> bool:
+    """Should the unit run to reach ``target``? Adds start/stop margins so it
+    doesn't come on for a room that's already there, or flick on and off."""
+    t = st.current_temp
+    if t is None or target is None:
+        return True
+    running = st.available and st.hvac_mode == hvac
+    if hvac == HVAC_COOL:
+        return t > target - settings.stop_margin if running else t >= target + settings.start_margin
+    return t < target + settings.stop_margin if running else t <= target - settings.start_margin
+
+
+def _already_there(hvac: str, target: float, st: RoomState) -> str:
+    word = "Cool" if hvac == HVAC_COOL else "Warm"
+    return f"{word} enough – {_fmt_t(st.current_temp)} (target {_fmt_t(target)})"
+
+
 def round_to_step(value: float, st: RoomState) -> float:
     step = st.step or 0.5
     value = round(round(value / step) * step, 2)
@@ -391,6 +410,13 @@ def decide(
 
         def done(mode, level, reason, target=None, forced=False):
             decisions[room_id] = Decision(room_id, mode, target, level, reason, forced)
+
+        def run(hvac, level, reason, target):
+            """Run at ``target`` – unless the room is already there."""
+            if needs_running(hvac, target, st, settings):
+                done(hvac, level, reason, target)
+            else:
+                done(HVAC_OFF, LEVEL_OFF, f"{why} – {_already_there(hvac, target, st).lower()}")
 
         if house.house_mode == HOUSE_PAUSED:
             done(None, LEVEL_PAUSED, "Comfort Pilot paused")
@@ -470,19 +496,19 @@ def decide(
 
         if comfort_rule is not None and comfort_rule.target is not None:
             target = round_to_step(comfort_rule.target, st)
-            done(hvac, LEVEL_RULE, f"{why} ({_fmt_t(target)})", target)
+            run(hvac, LEVEL_RULE, f"{why} ({_fmt_t(target)})", target)
             continue
         if need == NEED_NOW and st.room_mode in (ROOM_COMFORT, ROOM_ECO):
             level = LEVEL_COMFORT if st.room_mode == ROOM_COMFORT else LEVEL_ECO
-            done(hvac, level, f"{why} – room set to {st.room_mode}",
-                 _setpoint(hvac, level, cfg, st, None))
+            run(hvac, level, f"{why} – room set to {st.room_mode}",
+                _setpoint(hvac, level, cfg, st, None))
             continue
         if need == NEED_NOW and house.house_mode == HOUSE_BOOST:
-            done(hvac, LEVEL_BOOST, f"{why} – boost", _setpoint(hvac, LEVEL_BOOST, cfg, st, None))
+            run(hvac, LEVEL_BOOST, f"{why} – boost", _setpoint(hvac, LEVEL_BOOST, cfg, st, None))
             continue
         if need == NEED_NOW and eco_rule is not None:
-            done(hvac, LEVEL_ECO, f"{why} – rule: {eco_rule.name}",
-                 _setpoint(hvac, LEVEL_ECO, cfg, st, None))
+            run(hvac, LEVEL_ECO, f"{why} – rule: {eco_rule.name}",
+                _setpoint(hvac, LEVEL_ECO, cfg, st, None))
             continue
 
         key = (
@@ -497,6 +523,15 @@ def decide(
     remaining = budget
     for _key, room_id, hvac, need, why in sorted(candidates):
         cfg, st = rooms[room_id], states[room_id]
+        comfort_level = LEVEL_COMFORT if need == NEED_NOW else LEVEL_PRECOOL
+        comfort_target = _setpoint(hvac, comfort_level, cfg, st, None)
+        eco_target = _setpoint(hvac, LEVEL_ECO, cfg, st, None)
+        if not needs_running(hvac, comfort_target, st, settings):
+            # Already at the comfortable end: nothing to do, and no solar used.
+            decisions[room_id] = Decision(
+                room_id, HVAC_OFF, None, LEVEL_OFF, f"{why} – {_already_there(hvac, comfort_target, st).lower()}"
+            )
+            continue
         cost = cfg.est_power
         was_comfort = st.last_level in (LEVEL_COMFORT, LEVEL_PRECOOL)
         threshold = cost - settings.solar_margin if was_comfort else cost
@@ -514,10 +549,15 @@ def decide(
             )
         elif need == NEED_NOW:
             source = "on grid power" if remaining is not None else "no grid reading"
-            decisions[room_id] = Decision(
-                room_id, hvac, _setpoint(hvac, LEVEL_ECO, cfg, st, None), LEVEL_ECO,
-                f"{why} – economy, {source}",
-            )
+            if needs_running(hvac, eco_target, st, settings):
+                decisions[room_id] = Decision(
+                    room_id, hvac, eco_target, LEVEL_ECO, f"{why} – economy, {source}"
+                )
+            else:
+                decisions[room_id] = Decision(
+                    room_id, HVAC_OFF, None, LEVEL_OFF,
+                    f"{why} – {_already_there(hvac, eco_target, st).lower()} on economy ({source})",
+                )
         else:
             decisions[room_id] = Decision(
                 room_id, HVAC_OFF, None, LEVEL_OFF, f"{why} – waiting for spare solar"

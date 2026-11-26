@@ -40,6 +40,10 @@ const SETTINGS_GROUPS = [
     ["cooling_season_above", "Cooling season when the forecast high is at least", "°C", 0.5],
     ["heating_season_below", "Heating season when the forecast high is at most", "°C", 0.5],
   ]],
+  ["Starting and stopping", "So a unit doesn't come on for a room that's already comfortable.", [
+    ["start_margin", "Start cooling once a room is this far above its setpoint (heating: below)", "°C", 0.5],
+    ["stop_margin", "Stop cooling once a room is this far below its setpoint (heating: above)", "°C", 0.5],
+  ]],
   ["Solar", "How eagerly Comfort Pilot uses spare solar.", [
     ["solar_margin", "Grid import tolerated before a room drops out of comfort", "W", 50],
     ["precondition_hours", "Pre-cool on spare solar this long before a rule starts", "h", 0.5],

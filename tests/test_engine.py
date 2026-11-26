@@ -386,3 +386,62 @@ def test_pending_occupancy_reason_and_forced_flags():
     assert not d.forced
     d = decide(r, {"climate.office": occupied()}, [], house(house_mode=HOUSE_AWAY), S).decisions["climate.office"]
     assert d.forced
+
+
+# --- start / stop margins ----------------------------------------------------
+
+def test_occupied_room_already_cool_stays_off():
+    r = rooms("office")
+    # On grid: eco target 26. Room at 24.5 is already below it.
+    d = decide(r, {"climate.office": occupied(temp=24.5)}, [], house(grid_power=500), S).decisions["climate.office"]
+    assert d.hvac_mode == HVAC_OFF
+    assert d.reason == "Occupied – cool enough – 24.5° (target 26°) on economy (on grid power)"
+    # On solar: comfort target 23 – 24.5 is above 23.5 so it runs.
+    d = decide(r, {"climate.office": occupied(temp=24.5)}, [], house(grid_power=-2000), S).decisions["climate.office"]
+    assert (d.hvac_mode, d.target) == (HVAC_COOL, 23.0)
+
+
+def test_start_needs_margin_above_setpoint():
+    r = rooms("office")
+    h = house(grid_power=500)  # eco 26
+    assert decide(r, {"climate.office": occupied(temp=26.4)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_OFF
+    assert decide(r, {"climate.office": occupied(temp=26.5)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_COOL
+
+
+def test_running_unit_keeps_going_until_well_below():
+    r = rooms("office")
+    h = house(grid_power=500)  # eco 26
+    running = dict(hvac_mode=HVAC_COOL, target=26)
+    d = decide(r, {"climate.office": occupied(temp=24.8, **running)}, [], h, S).decisions["climate.office"]
+    assert d.hvac_mode == HVAC_COOL
+    d = decide(r, {"climate.office": occupied(temp=24.5, **running)}, [], h, S).decisions["climate.office"]
+    assert d.hvac_mode == HVAC_OFF
+
+
+def test_already_cool_room_uses_no_solar_budget():
+    r = rooms("office", "bedroom")
+    r["climate.office"].priority = "high"
+    states = {"climate.office": occupied(temp=22.0), "climate.bedroom": occupied(temp=27.0)}
+    res = decide(r, states, [], house(grid_power=-1000), S)
+    assert res.decisions["climate.office"].hvac_mode == HVAC_OFF
+    assert res.decisions["climate.bedroom"].level == LEVEL_COMFORT
+
+
+def test_rule_target_respects_margins():
+    r = rooms("bedroom")
+    rule = bedroom_night_rule(target=24)
+    night = house(now=NOW.replace(hour=23), grid_power=500)
+    d = decide(r, {"climate.bedroom": empty(temp=23.8)}, [rule], night, S).decisions["climate.bedroom"]
+    assert d.hvac_mode == HVAC_OFF and "cool enough" in d.reason
+    d = decide(r, {"climate.bedroom": empty(temp=24.6)}, [rule], night, S).decisions["climate.bedroom"]
+    assert (d.hvac_mode, d.target) == (HVAC_COOL, 24.0)
+
+
+def test_heating_margins():
+    r = rooms("office")
+    h = house(outside_temp=10, forecast_high=14, grid_power=500)  # eco heat 18
+    assert decide(r, {"climate.office": occupied(temp=17.8)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_OFF
+    assert decide(r, {"climate.office": occupied(temp=17.5)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_HEAT
+    running = dict(hvac_mode=HVAC_HEAT, target=18)
+    assert decide(r, {"climate.office": occupied(temp=19.2, **running)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_HEAT
+    assert decide(r, {"climate.office": occupied(temp=19.5, **running)}, [], h, S).decisions["climate.office"].hvac_mode == HVAC_OFF

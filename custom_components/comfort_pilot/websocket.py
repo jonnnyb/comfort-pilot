@@ -130,6 +130,8 @@ _SETTINGS_RANGES = {
     "fresh_air_min_indoor": (15, 32),
     "fresh_air_close_margin": (0, 5),
     "neutral_trigger": (0, 5),
+    "start_margin": (0, 3),
+    "stop_margin": (0, 5),
 }
 SETTINGS_SCHEMA = vol.Schema(
     {
