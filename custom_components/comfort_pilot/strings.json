@@ -58,19 +58,21 @@
           "heat_max": "Heating – comfortable end",
           "priority": "Priority when sharing solar",
           "est_power": "Typical power while running",
+          "occupancy_delay": "Confirm occupancy after",
           "occupancy_timeout": "Stay occupied after last motion"
         },
         "data_description": {
           "window_sensors": "Unit turns off if any is open for more than 2 minutes.",
           "est_power": "Used to share spare solar between rooms. Roughly what the unit draws once it's settled.",
-          "occupancy_timeout": "Presence sensors use 5 minutes automatically."
+          "occupancy_delay": "Motion must continue this long before the room counts as occupied, so walking through doesn't start the AC. 0 = straight away.",
+          "occupancy_timeout": "Presence sensors use 5 minutes at most."
         }
       },
       "add_rule": {
         "title": "Add a rule",
-        "description": "Example: Bedroom, keep comfortable, every day, 21:00 to 06:30, 24°. Windows that end earlier than they start run past midnight.",
+        "description": "Example: all bedrooms, keep comfortable, every day, 21:00 to 06:30, 24°. Windows that end earlier than they start run past midnight.",
         "data": {
-          "room": "Room",
+          "rooms": "Rooms",
           "name": "Name",
           "action": "What to do",
           "days": "Days",
@@ -99,6 +101,8 @@
           "fresh_air_delta": "Fresh air alert when outside is cooler by",
           "fresh_air_min_indoor": "Only send fresh air alerts when inside is at least",
           "hold_minutes": "Manual changes are respected for",
+          "min_run_minutes": "Once on, keep a unit running for at least",
+          "min_off_minutes": "Once off, keep a unit off for at least",
           "quiet_start": "No notifications from",
           "quiet_end": "No notifications until"
         }
@@ -121,6 +125,7 @@
       "bad_notify": "Should look like notify.mobile_app_yourphone.",
       "band_order": "The first value must be lower than the second.",
       "no_days": "Pick at least one day.",
+      "no_rooms": "Pick at least one room.",
       "same_time": "Start and end can't be the same."
     },
     "abort": {

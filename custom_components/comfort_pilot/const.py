@@ -2,7 +2,7 @@
 
 DOMAIN = "comfort_pilot"
 NAME = "Comfort Pilot"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 PLATFORMS = ["sensor", "select", "switch", "button"]
 
@@ -30,11 +30,17 @@ ROOM_HEAT_MAX = "heat_max"
 ROOM_PRIORITY = "priority"
 ROOM_POWER = "est_power"
 ROOM_OCC_TIMEOUT = "occupancy_timeout"
+ROOM_OCC_DELAY = "occupancy_delay"
 
 # Coordinator-only settings (stored with the engine settings)
 SET_HOLD_MINUTES = "hold_minutes"
 SET_QUIET_START = "quiet_start"
 SET_QUIET_END = "quiet_end"
+SET_MIN_RUN = "min_run_minutes"
+SET_MIN_OFF = "min_off_minutes"
+DEFAULT_MIN_RUN = 10
+DEFAULT_MIN_OFF = 5
+DEFAULT_OCC_DELAY = 3
 DEFAULT_HOLD_MINUTES = 120
 DEFAULT_QUIET_START = "22:00:00"
 DEFAULT_QUIET_END = "07:00:00"
@@ -49,6 +55,7 @@ MIN_SECONDS_BETWEEN_SETPOINT_CHANGES = 600
 OWN_CHANGE_GRACE_SECONDS = 45
 NOTIFY_REPEAT_MINUTES = 120
 MAX_OVERRIDE_LOG = 2000
+MAX_EVENT_LOG = 500
 
 # Mobile app notification actions
 ACTION_FRESH_AIR_ON = "COMFORT_PILOT_FRESH_AIR_ON"

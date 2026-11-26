@@ -36,12 +36,16 @@ from .const import (
     CONF_SOLAR_SENSOR,
     CONF_WEATHER,
     DEFAULT_HOLD_MINUTES,
+    DEFAULT_MIN_OFF,
+    DEFAULT_MIN_RUN,
+    DEFAULT_OCC_DELAY,
     DEFAULT_QUIET_END,
     DEFAULT_QUIET_START,
     DOMAIN,
     FORECAST_REFRESH_MINUTES,
     GRID_SAMPLE_SECONDS,
     GRID_WINDOW_SECONDS,
+    MAX_EVENT_LOG,
     MAX_OVERRIDE_LOG,
     MIN_SECONDS_BETWEEN_SETPOINT_CHANGES,
     MIN_SETPOINT_CHANGE,
@@ -57,12 +61,15 @@ from .const import (
     ROOM_HEAT_MAX,
     ROOM_HEAT_MIN,
     ROOM_NAME,
+    ROOM_OCC_DELAY,
     ROOM_OCC_TIMEOUT,
     ROOM_OCCUPANCY,
     ROOM_POWER,
     ROOM_PRIORITY,
     ROOM_WINDOWS,
     SET_HOLD_MINUTES,
+    SET_MIN_OFF,
+    SET_MIN_RUN,
     SET_QUIET_END,
     SET_QUIET_START,
     STORAGE_VERSION,
@@ -77,6 +84,7 @@ from .engine import (
     HOUSE_PAUSED,
     HVAC_OFF,
     LEVEL_HOLD,
+    LEVEL_OFF,
     LEVEL_PAUSED,
     ROOM_AUTO,
     ROOM_MODES,
@@ -98,6 +106,12 @@ _LOGGER = logging.getLogger(__name__)
 BAD_STATES = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
 PRESENCE_CLASSES = ("occupancy", "presence")
 PRESENCE_TIMEOUT_MINUTES = 5
+
+
+def _unit_text(mode: str | None, target: float | None) -> str:
+    if mode in (None, HVAC_OFF):
+        return "off"
+    return f"{str(mode).replace('_', ' ')} {target:g}°" if target is not None else str(mode)
 
 
 def _float(value: Any) -> float | None:
@@ -161,6 +175,12 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self.season: str = SEASON_NEUTRAL
 
         self._last_motion: dict[str, datetime] = {}
+        self._visit_start: dict[str, datetime] = {}
+        self._confirmed: dict[str, bool] = {}
+        self._unit_on_at: dict[str, datetime] = {}
+        self._unit_off_at: dict[str, datetime] = {}
+        self._logged: dict[str, tuple] = {}
+        self.log: list[dict] = []
         self._last_level: dict[str, str] = {}
         self._expected: dict[str, Expected] = {}
         self._own_contexts: deque[str] = deque(maxlen=100)
@@ -195,6 +215,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
                 priority=ro.get(ROOM_PRIORITY, "normal"),
                 est_power=float(ro.get(ROOM_POWER, 900)),
                 occupancy_timeout=int(ro.get(ROOM_OCC_TIMEOUT, 20)),
+                occupancy_delay=int(ro.get(ROOM_OCC_DELAY, DEFAULT_OCC_DELAY)),
             )
             self.occupancy_sensors[climate_id] = list(ro.get(ROOM_OCCUPANCY, []))
             self.window_sensors[climate_id] = list(ro.get(ROOM_WINDOWS, []))
@@ -213,13 +234,16 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self.hold_minutes = int(raw_settings.pop(SET_HOLD_MINUTES, DEFAULT_HOLD_MINUTES))
         self.quiet_start = parse_time(raw_settings.pop(SET_QUIET_START, DEFAULT_QUIET_START))
         self.quiet_end = parse_time(raw_settings.pop(SET_QUIET_END, DEFAULT_QUIET_END))
+        self.min_run = int(raw_settings.pop(SET_MIN_RUN, DEFAULT_MIN_RUN))
+        self.min_off = int(raw_settings.pop(SET_MIN_OFF, DEFAULT_MIN_OFF))
         self.settings = Settings.from_dict(raw_settings)
 
     async def async_apply_options(self, options: dict) -> None:
         """Apply changed rooms/rules/settings without reloading the integration."""
         self._load_options(options)
         self._subscribe_sensors()
-        self._last_setpoint_change.clear()
+        self._clear_protection()
+        self._log("system", "Settings updated")
         await self.async_refresh()
 
     def _subscribe_sensors(self) -> None:
@@ -260,6 +284,10 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             if when and room in self.rooms:
                 self._last_motion[room] = when
         self.overrides = list(stored.get("overrides", []))[-MAX_OVERRIDE_LOG:]
+        self.log = list(stored.get("log", []))[-MAX_EVENT_LOG:]
+        self._confirmed = {
+            k: bool(v) for k, v in stored.get("occupied", {}).items() if k in self.rooms
+        }
         self.season = stored.get("season", SEASON_NEUTRAL)
 
         hass = self.hass
@@ -300,6 +328,8 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             "holds": {k: v.isoformat() for k, v in self.holds.items()},
             "last_motion": {k: v.isoformat() for k, v in self._last_motion.items()},
             "overrides": self.overrides[-MAX_OVERRIDE_LOG:],
+            "log": self.log[-MAX_EVENT_LOG:],
+            "occupied": {k: v for k, v in self._confirmed.items() if v},
             "season": self.season,
         }
 
@@ -308,29 +338,41 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
 
     # ----------------------------------------------------------- user controls
 
+    def _clear_protection(self, room: str | None = None) -> None:
+        """The user asked for something: apply it straight away."""
+        for d in (self._last_setpoint_change, self._unit_on_at, self._unit_off_at):
+            if room is None:
+                d.clear()
+            else:
+                d.pop(room, None)
+
     async def async_set_house_mode(self, mode: str) -> None:
+        self._log("mode", f"House mode set to {mode}")
         self.house_mode = mode
-        self._last_setpoint_change.clear()  # user asked: apply straight away
+        self._clear_protection()
         self._save()
         await self.async_refresh()
 
     async def async_set_room_mode(self, room: str, mode: str) -> None:
+        self._log("mode", f"Mode set to {mode}", room)
         self.room_modes[room] = mode
         self.holds.pop(room, None)
-        self._last_setpoint_change.pop(room, None)
+        self._clear_protection(room)
         self._save()
         await self.async_refresh()
 
     async def async_set_fresh_air(self, on: bool) -> None:
+        self._log("mode", f"Fresh air mode {'on' if on else 'off'}")
         self.fresh_air = on
         self._advice_sent = None
-        self._last_setpoint_change.clear()
+        self._clear_protection()
         self._save()
         await self.async_refresh()
 
     async def async_resume(self, room: str) -> None:
-        self.holds.pop(room, None)
-        self._last_setpoint_change.pop(room, None)
+        if self.holds.pop(room, None):
+            self._log("mode", "Resumed automatic control", room)
+        self._clear_protection(room)
         self._save()
         await self.async_refresh()
 
@@ -345,13 +387,18 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         new = event.data.get("new_state")
         old = event.data.get("old_state")
         entity_id = event.data.get(ATTR_ENTITY_ID)
+        rooms = [r for r, sensors in self.occupancy_sensors.items() if entity_id in sensors]
+        now = dt_util.now()
         if old is not None and old.state == STATE_ON and (new is None or new.state != STATE_ON):
-            for room, sensors in self.occupancy_sensors.items():
-                if entity_id in sensors:
-                    self._last_motion[room] = dt_util.now()
+            for room in rooms:
+                self._last_motion[room] = now
             self._save()
         if new is not None and new.state == STATE_ON:
-            # Someone walked in: react quickly rather than waiting for the next cycle.
+            for room in rooms:
+                self._last_motion[room] = now
+                if not self._confirmed.get(room) and room not in self._visit_start:
+                    self._start_visit(room, now)
+            # React quickly rather than waiting for the next cycle.
             self.hass.async_create_task(self.async_request_refresh())
 
     @callback
@@ -386,6 +433,12 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             return
         if old.state in BAD_STATES or new.state in BAD_STATES:
             return
+        if old.state == HVAC_OFF and new.state != HVAC_OFF:
+            self._unit_on_at[entity_id] = dt_util.now()
+            self._unit_off_at.pop(entity_id, None)
+        elif old.state != HVAC_OFF and new.state == HVAC_OFF:
+            self._unit_off_at[entity_id] = dt_util.now()
+            self._unit_on_at.pop(entity_id, None)
         old_t = _float(old.attributes.get(ATTR_TEMPERATURE))
         new_t = _float(new.attributes.get(ATTR_TEMPERATURE))
         if old.state == new.state and old_t == new_t:
@@ -423,6 +476,12 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self.overrides.append(entry)
         del self.overrides[:-MAX_OVERRIDE_LOG]
         _LOGGER.debug("Manual change recorded: %s", entry)
+        self._log(
+            "manual",
+            f"Changed by hand: {_unit_text(old.state, old_t)} → {_unit_text(new.state, new_t)}"
+            + ("" if self.house_mode == HOUSE_PAUSED else f" – leaving it alone for {self.hold_minutes} min"),
+            entity_id,
+        )
 
         if self.house_mode != HOUSE_PAUSED:
             self.holds[entity_id] = now + timedelta(minutes=self.hold_minutes)
@@ -546,15 +605,17 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         sensors = [s for s in sensors if s is not None and s.state not in BAD_STATES]
         if sensors:
             st.has_occupancy_sensor = True
-            st.occupied_now = any(s.state == STATE_ON for s in sensors)
-            if st.occupied_now:
-                self._last_motion[room] = now
-            # Only motion we've actually seen counts (a sensor's last_changed
-            # resets when Home Assistant restarts, so it can't be trusted).
-            st.last_occupied = self._last_motion.get(room)
             all_presence = all(s.attributes.get("device_class") in PRESENCE_CLASSES for s in sensors)
             if all_presence:
                 cfg.occupancy_timeout = min(cfg.occupancy_timeout, PRESENCE_TIMEOUT_MINUTES)
+            raw_on = any(s.state == STATE_ON for s in sensors)
+            self._track_occupancy(room, raw_on, now)
+            confirmed = self._confirmed.get(room, False)
+            st.occupied_now = raw_on and confirmed
+            # Only motion we've actually seen counts (a sensor's last_changed
+            # resets when Home Assistant restarts, so it can't be trusted).
+            st.last_occupied = self._last_motion.get(room) if confirmed else None
+            st.occupancy_pending = not confirmed and room in self._visit_start
         windows = [self.hass.states.get(e) for e in self.window_sensors.get(room, [])]
         st.window_open = any(
             w is not None
@@ -563,6 +624,83 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             for w in windows
         )
         return st
+
+
+    # ------------------------------------------------------------- occupancy
+
+    def _start_visit(self, room: str, now: datetime) -> None:
+        self._visit_start[room] = now
+        delay = self.rooms[room].occupancy_delay
+        if delay > 0:
+            self._log("occupancy", f"Motion detected – waiting {delay} min to confirm", room)
+            async_call_later(self.hass, delay * 60 + 5, self._delayed_refresh)
+
+    def _track_occupancy(self, room: str, raw_on: bool, now: datetime) -> None:
+        """Confirm a visit after sustained motion; end it after the timeout."""
+        cfg = self.rooms[room]
+        confirmed = self._confirmed.get(room, False)
+        delay = timedelta(minutes=cfg.occupancy_delay)
+        if raw_on:
+            self._last_motion[room] = now
+            if confirmed:
+                return
+            if room not in self._visit_start:
+                self._start_visit(room, now)
+            if now - self._visit_start[room] >= delay:
+                self._confirmed[room] = True
+                self._visit_start.pop(room, None)
+                self._log("occupancy", "Occupied", room)
+                self._save()
+            return
+        last = self._last_motion.get(room)
+        if confirmed:
+            if last is None or now - last > timedelta(minutes=cfg.occupancy_timeout):
+                self._confirmed[room] = False
+                self._log("occupancy", f"Unoccupied – no motion for {cfg.occupancy_timeout} min", room)
+                self._save()
+        elif room in self._visit_start:
+            if last is None or now - last > max(delay, timedelta(minutes=1)):
+                self._visit_start.pop(room, None)
+                self._log("occupancy", "Motion didn't continue – ignored", room)
+
+    # ------------------------------------------------------- cycle protection
+
+    def _protect(self, room: str, d: Decision, st: RoomState, now: datetime) -> Decision:
+        """Avoid switching a unit on and off too often."""
+        if d.forced or d.hvac_mode is None or not st.available:
+            return d
+        if d.hvac_mode == HVAC_OFF and st.running:
+            on_at = self._unit_on_at.get(room)
+            if on_at and now - on_at < timedelta(minutes=self.min_run):
+                until = (on_at + timedelta(minutes=self.min_run)).strftime("%H:%M")
+                # Still running as before, so keep its previous level.
+                return Decision(room, None, None, self._last_level.get(room, d.level),
+                                f"{d.reason} – keeping on until {until} (minimum run time)")
+        if d.hvac_mode != HVAC_OFF and not st.running:
+            off_at = self._unit_off_at.get(room)
+            if off_at and now - off_at < timedelta(minutes=self.min_off):
+                until = (off_at + timedelta(minutes=self.min_off)).strftime("%H:%M")
+                return Decision(room, None, None, LEVEL_OFF,
+                                f"{d.reason} – can restart at {until} (minimum off time)")
+        return d
+
+    # ------------------------------------------------------------------- log
+
+    def _log(self, category: str, message: str, room: str | None = None, **details: Any) -> None:
+        name = self.rooms[room].name if room and room in self.rooms else None
+        entry = {
+            "at": dt_util.now().isoformat(),
+            "category": category,
+            "room": room,
+            "room_name": name,
+            "message": message,
+        }
+        if details:
+            entry["details"] = details
+        self.log.append(entry)
+        del self.log[:-MAX_EVENT_LOG]
+        _LOGGER.debug("%s%s", f"{name}: " if name else "", message)
+        self._save()
 
     # ------------------------------------------------------------- main loop
 
@@ -590,10 +728,15 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         )
         result = decide(self.rooms, states, self.rules, house, self.settings)
         if result.season != self.season:
+            self._log("system", f"Season changed from {self.season} to {result.season}",
+                      outside=house.outside_temp, forecast_high=house.forecast_high)
             self.season = result.season
             self._save()
 
-        for room, decision in result.decisions.items():
+        for room, decision in list(result.decisions.items()):
+            decision = self._protect(room, decision, states[room], now)
+            result.decisions[room] = decision
+            self._log_decision(room, decision, states[room], house, result)
             await self._apply(room, decision, states[room], now)
 
         advice, inside = fresh_air_advice(states, house, self.settings)
@@ -609,6 +752,27 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             anyone_home=house.anyone_home,
             advice=advice,
             room_states=states,
+        )
+
+    def _log_decision(self, room, d: Decision, st: RoomState, house: HouseState, result: Result) -> None:
+        key = (d.level, d.hvac_mode, d.target, "guard" if "(minimum" in d.reason else "")
+        if self._logged.get(room) == key:
+            return
+        first = room not in self._logged
+        self._logged[room] = key
+        if first and d.level == LEVEL_PAUSED:
+            return
+        setting = f"{d.hvac_mode.title()} {d.target:g}° – " if d.hvac_mode not in (None, HVAC_OFF) and d.target is not None else ""
+        self._log(
+            "decision",
+            f"{setting}{d.reason}",
+            room,
+            level=d.level,
+            room_temp=st.current_temp,
+            occupied=st.occupied_now,
+            solar_budget=result.solar_budget,
+            grid_power=house.grid_power,
+            outside=house.outside_temp,
         )
 
     async def _apply(self, room: str, d: Decision, st: RoomState, now: datetime) -> None:
@@ -648,7 +812,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         context = Context()
         self._own_contexts.append(context.id)
         self._expected[room] = Expected(mode, target, now)
-        _LOGGER.debug("climate.%s %s %s", service, room, data)
+        self._log("action", f"Sent: {_unit_text(mode, target)}", room, service=f"climate.{service}", data=data)
         try:
             await self.hass.services.async_call(
                 "climate",
@@ -659,6 +823,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             )
         except Exception as err:  # noqa: BLE001 - one bad unit shouldn't stop the rest
             _LOGGER.warning("Could not control %s: %s", room, err)
+            self._log("error", f"Couldn't control the unit: {err}", room)
 
     # ----------------------------------------------------------- notifications
 
@@ -700,6 +865,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             return
         self._advice_sent = advice
         self._last_notified[advice] = now
+        self._log("notify", f"Notification: {title} – {message}")
         await self._notify(title, message, action)
 
     async def _notify(self, title: str, message: str, action: dict) -> None:
@@ -725,3 +891,4 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
                 )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not send notification: %s", err)
+            self._log("error", f"Couldn't send notification: {err}")

@@ -44,9 +44,9 @@ Rooms are named from your Home Assistant areas, and motion/presence/window senso
 
 Rules handle the things sensors can't see. The most useful one:
 
-> **Bedroom** – Keep comfortable – every day – 21:00 to 06:30 – 24°
+> **All bedrooms** – Keep comfortable – every day – 21:00 to 06:30 – 24°
 
-Motion sensors don't see sleeping people, so bedrooms need a rule like this. Windows that end earlier than they start run past midnight.
+Motion sensors don't see sleeping people, so bedrooms need a rule like this. A rule can cover several rooms. Windows that end earlier than they start run past midnight.
 
 | Action | Effect |
 |---|---|
@@ -62,7 +62,7 @@ After installing, **Comfort Pilot** appears in the sidebar. Everything day-to-da
 - **Rooms** – comfort bands, sensors (sensors in the same area are listed first), solar priority, typical power
 - **Rules** – add, edit, pause or delete schedules
 - **Settings** – thresholds, quiet hours, and which splits and sensors it uses
-- **Activity** – your manual changes, the data phase 2 learns from
+- **Log** – everything Comfort Pilot decided and sent, occupancy changes, your manual changes, notifications and errors. Filter by room or type; click a line for the readings at the time
 
 Room, rule and settings changes apply immediately, without restarting the integration. Changing which splits or sensors it uses restarts it (takes a second). Changing configuration needs an admin account; anyone can use the Overview controls.
 
@@ -87,6 +87,15 @@ Room, rule and settings changes apply immediately, without restarting the integr
 | `sensor.comfort_pilot_<room>_status` | Plain English: *"Cool 23° – Occupied – solar available (2.1 kW)"* |
 | `select.comfort_pilot_<room>_mode` | Auto, Comfort, Eco, Off |
 | `button.comfort_pilot_<room>_resume_auto` | Cancel a manual hold |
+
+### Occupancy
+
+- **Confirm occupancy after** (default 3 min): motion has to continue this long before a room counts as occupied, so walking through doesn't start the AC. Set 0 to react to the first motion.
+- **Stay occupied after last motion** (default 20 min): covers sitting still. Rooms with only presence sensors use 5 minutes at most.
+
+### Protecting the units
+
+Once Comfort Pilot turns a unit on it keeps it running for at least 10 minutes, and once off it stays off for at least 5 (both adjustable in Settings). Window open, fresh air mode, Off, Away and safety limits still act straight away, and so do your own mode changes.
 
 ### Manual changes
 
@@ -120,7 +129,7 @@ entities:
 4. Season from today's forecast high: ≥ 26° cooling, ≤ 17° heating, otherwise neutral (only acts if a room drifts outside its band)
 5. Is the room needed? Rule active, occupied, or a rule starting soon
 6. Share the solar budget by priority: occupied rooms first, then pre-cooling. Rooms that don't get solar run at the economy end.
-7. Gentle output: at most one setpoint change per room every 10 minutes, ignores changes under 0.5°
+7. Gentle output: minimum run/off times, at most one setpoint change per room every 10 minutes, ignores changes under 0.5°
 
 ## Roadmap
 

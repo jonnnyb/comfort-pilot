@@ -32,12 +32,15 @@ from .const import (
     ROOM_HEAT_MAX,
     ROOM_HEAT_MIN,
     ROOM_NAME,
+    ROOM_OCC_DELAY,
     ROOM_OCC_TIMEOUT,
     ROOM_OCCUPANCY,
     ROOM_POWER,
     ROOM_PRIORITY,
     ROOM_WINDOWS,
     SET_HOLD_MINUTES,
+    SET_MIN_OFF,
+    SET_MIN_RUN,
     SET_QUIET_END,
     SET_QUIET_START,
 )
@@ -52,6 +55,7 @@ from .engine import (
     Rule,
     Settings,
     parse_time,
+    prune_rules,
 )
 
 ROOM_DEFAULTS = {
@@ -64,6 +68,7 @@ ROOM_DEFAULTS = {
     ROOM_PRIORITY: "normal",
     ROOM_POWER: 900,
     ROOM_OCC_TIMEOUT: 20,
+    ROOM_OCC_DELAY: 3,
 }
 
 
@@ -90,13 +95,15 @@ ROOM_SCHEMA = vol.Schema(
         vol.Required(ROOM_PRIORITY): vol.In(["high", "normal", "low"]),
         vol.Required(ROOM_POWER): vol.All(vol.Coerce(int), vol.Range(min=100, max=5000)),
         vol.Required(ROOM_OCC_TIMEOUT): vol.All(vol.Coerce(int), vol.Range(min=1, max=240)),
+        vol.Optional(ROOM_OCC_DELAY, default=3): vol.All(vol.Coerce(int), vol.Range(min=0, max=30)),
     }
 )
 
 RULE_SCHEMA = vol.Schema(
     {
         vol.Optional("id"): vol.Any(None, str),
-        vol.Required("room"): str,
+        vol.Optional("rooms"): [str],
+        vol.Optional("room"): str,
         vol.Required("name"): vol.All(str, vol.Strip, vol.Length(min=1, max=60)),
         vol.Required("days"): vol.All([vol.All(vol.Coerce(int), vol.Range(min=0, max=6))], vol.Length(min=1)),
         vol.Required("start"): _time,
@@ -131,6 +138,8 @@ SETTINGS_SCHEMA = vol.Schema(
             for k, (lo, hi) in _SETTINGS_RANGES.items()
         },
         vol.Optional(SET_HOLD_MINUTES): vol.All(vol.Coerce(int), vol.Range(min=10, max=720)),
+        vol.Optional(SET_MIN_RUN): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
+        vol.Optional(SET_MIN_OFF): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
         vol.Optional(SET_QUIET_START): _time,
         vol.Optional(SET_QUIET_END): _time,
     }
@@ -203,6 +212,8 @@ def build_payload(c: ComfortPilotCoordinator) -> dict[str, Any]:
                         "hvac_mode": st.hvac_mode,
                         "target": st.target,
                         "occupied": st.occupied_now,
+                        "occupancy_pending": st.occupancy_pending,
+                        "last_motion": st.last_occupied.isoformat() if st.last_occupied else None,
                         "has_occupancy_sensor": st.has_occupancy_sensor,
                     }
                     if st
@@ -219,13 +230,14 @@ def build_payload(c: ComfortPilotCoordinator) -> dict[str, Any]:
             continue
         rules.append(
             {
-                **raw,
+                **{k: v for k, v in raw.items() if k != "room"},
+                "rooms": rule.rooms,
+                "room_names": [names.get(r, r) for r in rule.rooms],
                 "enabled": rule.enabled,
                 "start": rule.start.strftime("%H:%M"),
                 "end": rule.end.strftime("%H:%M"),
                 "description": rule.describe(),
                 "days_text": rule.describe_days(),
-                "room_name": names.get(rule.room, rule.room),
                 "active": rule.active_at(_now()),
             }
         )
@@ -233,6 +245,8 @@ def build_payload(c: ComfortPilotCoordinator) -> dict[str, Any]:
     settings[SET_HOLD_MINUTES] = c.hold_minutes
     settings[SET_QUIET_START] = c.quiet_start.strftime("%H:%M")
     settings[SET_QUIET_END] = c.quiet_end.strftime("%H:%M")
+    settings[SET_MIN_RUN] = c.min_run
+    settings[SET_MIN_OFF] = c.min_off
     overrides = []
     for o in reversed(c.overrides[-50:]):
         overrides.append({**o, "room_name": names.get(o.get("room"), o.get("room"))})
@@ -256,6 +270,7 @@ def build_payload(c: ComfortPilotCoordinator) -> dict[str, Any]:
         "settings": settings,
         "sources": dict(entry.data),
         "overrides": overrides,
+        "log": list(reversed(c.log[-300:])),
         "override_count": len(c.overrides),
         "choices": {
             "house_modes": HOUSE_MODES,
@@ -376,9 +391,15 @@ async def ws_save_rule(hass, connection, msg):
     except vol.Invalid as err:
         connection.send_error(msg["id"], "invalid", str(err))
         return
-    if rule["room"] not in c.rooms:
+    rooms = list(dict.fromkeys(rule.pop("rooms", None) or ([rule.pop("room")] if rule.get("room") else [])))
+    rule.pop("room", None)
+    if not rooms:
+        connection.send_error(msg["id"], "invalid", "Pick at least one room")
+        return
+    if any(r not in c.rooms for r in rooms):
         connection.send_error(msg["id"], "invalid", "Unknown room")
         return
+    rule["rooms"] = rooms
     if rule["start"] == rule["end"]:
         connection.send_error(msg["id"], "invalid", "Start and end can't be the same")
         return
@@ -458,7 +479,7 @@ async def ws_save_sources(hass, connection, msg):
     for climate in sources[CONF_CLIMATES]:
         rooms.setdefault(climate, detect_room(hass, climate))
     rooms = {k: v for k, v in rooms.items() if k in sources[CONF_CLIMATES]}
-    rules = [r for r in entry.options.get(OPT_RULES, []) if r.get("room") in rooms]
+    rules = prune_rules(entry.options.get(OPT_RULES, []), rooms)
     options = {**entry.options, OPT_ROOMS: rooms, OPT_RULES: rules}
     # Sources changed: the update listener reloads the integration.
     hass.config_entries.async_update_entry(entry, data=sources, options=options)

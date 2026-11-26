@@ -172,7 +172,7 @@ def test_room_without_sensor_follows_home_presence():
 # --- rules ------------------------------------------------------------------
 
 def bedroom_night_rule(**kw):
-    data = dict(id="r1", room="climate.bedroom", name="Bedroom cool at night",
+    data = dict(id="r1", rooms=["climate.bedroom"], name="Bedroom cool at night",
                 days=list(range(7)), start=time(21, 0), end=time(6, 30), action=RULE_COMFORT)
     data.update(kw)
     return Rule(**data)
@@ -214,7 +214,7 @@ def test_comfort_rule_without_target_uses_budget():
 
 def test_off_rule_wins():
     r = rooms("office")
-    rule = Rule("r2", "climate.office", "Office off overnight", list(range(7)),
+    rule = Rule("r2", ["climate.office"], "Office off overnight", list(range(7)),
                 time(13, 0), time(15, 0), RULE_OFF)
     res = decide(r, {"climate.office": occupied()}, [rule], house(grid_power=-3000), S)
     assert res.decisions["climate.office"].reason == "Rule: Office off overnight"
@@ -356,3 +356,33 @@ def test_rule_from_dict_and_describe():
 def test_settings_from_dict_ignores_unknown():
     s = Settings.from_dict({"safety_max": "30", "bogus": 1})
     assert s.safety_max == 30.0
+
+
+def test_multi_room_rule_applies_to_each_room():
+    r = rooms("bedroom", "kids")
+    rule = bedroom_night_rule(rooms=["climate.bedroom", "climate.kids"], target=24)
+    night = house(now=NOW.replace(hour=23), grid_power=500)
+    res = decide(r, {"climate.bedroom": empty(), "climate.kids": empty()}, [rule], night, S)
+    assert res.decisions["climate.bedroom"].target == 24
+    assert res.decisions["climate.kids"].target == 24
+
+
+def test_legacy_single_room_rule_dict():
+    rule = Rule.from_dict({"id": "x", "room": "climate.a", "name": "A", "days": [0],
+                           "start": "21:00", "end": "06:00"})
+    assert rule.rooms == ["climate.a"]
+    with pytest.raises(ValueError):
+        Rule.from_dict({"id": "y", "name": "B", "days": [0], "start": "21:00", "end": "06:00"})
+
+
+def test_pending_occupancy_reason_and_forced_flags():
+    r = rooms("office")
+    st = empty(occupancy_pending=True)
+    d = decide(r, {"climate.office": st}, [], house(), S).decisions["climate.office"]
+    assert d.reason == "Motion detected – confirming" and not d.forced
+    d = decide(r, {"climate.office": occupied(window_open=True)}, [], house(), S).decisions["climate.office"]
+    assert d.forced
+    d = decide(r, {"climate.office": occupied()}, [], house(anyone_home=False), S).decisions["climate.office"]
+    assert not d.forced
+    d = decide(r, {"climate.office": occupied()}, [], house(house_mode=HOUSE_AWAY), S).decisions["climate.office"]
+    assert d.forced

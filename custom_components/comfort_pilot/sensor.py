@@ -65,7 +65,7 @@ class RoomStatusSensor(RoomEntity, SensorEntity):
         data = self.coordinator.data
         st = data.room_states.get(self.room) if data else None
         hold = self.coordinator.holds.get(self.room)
-        rules = [r.describe() for r in self.coordinator.rules if r.room == self.room]
+        rules = [r.describe() for r in self.coordinator.rules if self.room in r.rooms]
         return {
             "level": d.level if d else None,
             "hvac_mode": d.hvac_mode if d else None,

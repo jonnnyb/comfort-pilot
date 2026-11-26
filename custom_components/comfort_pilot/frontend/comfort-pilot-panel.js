@@ -5,8 +5,17 @@ const TABS = [
   ["rooms", "Rooms"],
   ["rules", "Rules"],
   ["settings", "Settings"],
-  ["activity", "Activity"],
+  ["log", "Log"],
 ];
+const LOG_CATS = [
+  ["all", "All"], ["action", "Actions"], ["decision", "Decisions"], ["occupancy", "Occupancy"],
+  ["manual", "Manual changes"], ["notify", "Notifications"], ["mode", "Modes"], ["system", "System"], ["error", "Errors"],
+];
+const CAT_LABELS = Object.fromEntries(LOG_CATS);
+const DETAIL_LABELS = {
+  level: "Level", room_temp: "Room temp", occupied: "Occupied", solar_budget: "Solar budget",
+  grid_power: "Grid", outside: "Outside", forecast_high: "Forecast high", service: "Service", data: "Sent",
+};
 const HOUSE_LABELS = { auto: "Auto", home: "Home", away: "Away", boost: "Boost", off: "Off", paused: "Paused" };
 const HOUSE_HELP = {
   auto: "Follows who's home",
@@ -46,6 +55,10 @@ const SETTINGS_GROUPS = [
     ["quiet_start", "No notifications from", "time"],
     ["quiet_end", "…until", "time"],
   ]],
+  ["Protecting the units", "Avoids switching a split on and off too often. Windows, fresh air, Off and safety still act straight away.", [
+    ["min_run_minutes", "Once on, keep a unit running for at least", "min", 1],
+    ["min_off_minutes", "Once off, keep a unit off for at least", "min", 1],
+  ]],
   ["Manual changes", "When you change a unit yourself.", [
     ["hold_minutes", "Leave the room alone for", "min", 10],
   ]],
@@ -71,6 +84,9 @@ class ComfortPilotPanel extends HTMLElement {
     this._settingsDraft = null;
     this._sourcesDraft = null;
     this._busy = false;
+    this._logRoom = "all";
+    this._logCat = "all";
+    this._logOpen = new Set();
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("input", (e) => this._onInput(e));
     this.shadowRoot.addEventListener("change", (e) => this._onInput(e));
@@ -162,6 +178,21 @@ class ComfortPilotPanel extends HTMLElement {
       case "resume":
         await this._ws({ type: "comfort_pilot/resume", room }, "Back on auto");
         break;
+      case "log-cat":
+        this._logCat = v;
+        this._render();
+        break;
+      case "log-toggle":
+        this._logOpen.has(v) ? this._logOpen.delete(v) : this._logOpen.add(v);
+        this._render();
+        break;
+      case "toggle-rule-room": {
+        const set = new Set(this._ruleDraft.rooms);
+        set.has(v) ? set.delete(v) : set.add(v);
+        this._ruleDraft.rooms = [...set];
+        this._render();
+        break;
+      }
       case "edit-room": {
         const r = this._data.rooms.find((x) => x.id === room);
         this._editRoom = room;
@@ -189,7 +220,7 @@ class ComfortPilotPanel extends HTMLElement {
       }
       case "new-rule":
         this._ruleDraft = {
-          room: (this._data.rooms[0] || {}).id, name: "", action: "comfort",
+          rooms: [], name: "", action: "comfort",
           days: [0, 1, 2, 3, 4, 5, 6], start: "21:00", end: "06:30", target: 24, enabled: true,
         };
         this._render();
@@ -197,7 +228,7 @@ class ComfortPilotPanel extends HTMLElement {
       case "edit-rule": {
         const r = this._data.rules.find((x) => x.id === v);
         this._ruleDraft = clone({
-          id: r.id, room: r.room, name: r.name, action: r.action, days: r.days,
+          id: r.id, rooms: r.rooms, name: r.name, action: r.action, days: r.days,
           start: r.start, end: r.end, target: r.target, enabled: r.enabled, source: r.source,
         });
         this._render();
@@ -223,9 +254,14 @@ class ComfortPilotPanel extends HTMLElement {
         const rule = { ...this._ruleDraft };
         const hasTarget = rule.action === "comfort" && rule.target !== "" && rule.target !== null && rule.target !== undefined;
         rule.target = hasTarget ? Number(rule.target) : null;
+        if (!rule.rooms.length) {
+          this._showToast("Pick at least one room", true);
+          this._render();
+          break;
+        }
         if (!rule.name || !rule.name.trim()) {
-          const roomName = (this._data.rooms.find((x) => x.id === rule.room) || {}).name || "Room";
-          rule.name = `${roomName} ${ACTION_LABELS[rule.action].toLowerCase()}`;
+          const names = rule.rooms.map((id) => (this._data.rooms.find((x) => x.id === id) || {}).name || id);
+          rule.name = `${names.length > 2 ? `${names.length} rooms` : names.join(" & ")} – ${ACTION_LABELS[rule.action].toLowerCase()}`;
         }
         if (await this._ws({ type: "comfort_pilot/save_rule", rule }, "Rule saved")) {
           this._ruleDraft = null;
@@ -237,7 +273,7 @@ class ComfortPilotPanel extends HTMLElement {
         const r = this._data.rules.find((x) => x.id === v);
         await this._ws({
           type: "comfort_pilot/save_rule",
-          rule: { id: r.id, room: r.room, name: r.name, action: r.action, days: r.days, start: r.start, end: r.end, target: r.target, enabled: !r.enabled, source: r.source },
+          rule: { id: r.id, rooms: r.rooms, name: r.name, action: r.action, days: r.days, start: r.start, end: r.end, target: r.target, enabled: !r.enabled, source: r.source },
         }, r.enabled ? "Rule paused" : "Rule enabled");
         break;
       }
@@ -281,6 +317,11 @@ class ComfortPilotPanel extends HTMLElement {
 
   _onInput(e) {
     const el = e.target;
+    if (el.dataset.logRoom !== undefined) {
+      this._logRoom = el.value;
+      this._render();
+      return;
+    }
     const field = el.dataset.field;
     if (!field) return;
     const [scope, key] = field.split(".");
@@ -345,7 +386,7 @@ class ComfortPilotPanel extends HTMLElement {
         rooms: () => this._rooms(d),
         rules: () => this._rules(d),
         settings: () => this._settings(d),
-        activity: () => this._activity(d),
+        log: () => this._log(d),
       }[this._tab]();
     }
     const tabs = TABS.map(([k, label]) =>
@@ -413,7 +454,8 @@ class ComfortPilotPanel extends HTMLElement {
     const modes = Object.keys(ROOM_LABELS).map((m) =>
       `<button class="chip small ${r.mode === m ? "on" : ""}" data-action="room-mode" data-room="${esc(r.id)}" data-value="${m}">${ROOM_LABELS[m]}</button>`).join("");
     const occ = st.has_occupancy_sensor
-      ? `<span class="dot ${st.occupied ? "occ" : ""}" title="${st.occupied ? "Occupied" : "No one detected"}"></span>`
+      ? `<span class="dot ${st.occupied ? "occ" : st.occupancy_pending ? "pending" : ""}"
+           title="${st.occupied ? "Occupied" : st.occupancy_pending ? "Motion – confirming" : "No one detected"}"></span>`
       : "";
     const hold = r.hold_until
       ? `<div class="hold">Manual change – resumes ${esc(this._when(r.hold_until))}
@@ -454,6 +496,8 @@ class ComfortPilotPanel extends HTMLElement {
         <div><span class="label">Heating</span> ${fmtT(c.heat_min)} – ${fmtT(c.heat_max)}</div>
         <div><span class="label">Solar priority</span> ${esc(c.priority)}</div>
         <div><span class="label">Typical power</span> ${fmtW(c.est_power)}</div>
+        <div><span class="label">Occupied after</span> ${c.occupancy_delay ? `${esc(c.occupancy_delay)} min of motion` : "first motion"}</div>
+        <div><span class="label">Stays occupied</span> ${esc(c.occupancy_timeout)} min after last motion</div>
         <div><span class="label">Occupancy</span> ${occ}</div>
         <div><span class="label">Windows</span> ${win}</div>
       </div>
@@ -502,7 +546,12 @@ class ComfortPilotPanel extends HTMLElement {
       <div class="three">
         <label class="field"><span>Priority for spare solar</span><select data-field="room.priority">${pri}</select></label>
         <div class="field"><span>Typical power while running</span>${this._num("room", "est_power", c.est_power, 50, "W", 100, 5000)}</div>
-        <div class="field"><span>Occupied for after last motion</span>${this._num("room", "occupancy_timeout", c.occupancy_timeout, 1, "min", 1, 240)}</div>
+      </div>
+      <div class="two">
+        <div class="field"><span>Confirm occupancy after</span>${this._num("room", "occupancy_delay", c.occupancy_delay ?? 3, 1, "min", 0, 30)}
+          <div class="muted small">Motion must continue this long before the AC starts, so walking through doesn't trigger it. 0 = straight away.</div></div>
+        <div class="field"><span>Stay occupied after last motion</span>${this._num("room", "occupancy_timeout", c.occupancy_timeout, 1, "min", 1, 240)}
+          <div class="muted small">Covers sitting still. Presence sensors use 5 minutes at most.</div></div>
       </div>
       <div class="field"><span>Motion / presence sensors</span>${this._sensorPicker("occupancy_sensors", OCC_CLASSES, r.id)}</div>
       <div class="field"><span>Window sensors</span>
@@ -520,14 +569,12 @@ class ComfortPilotPanel extends HTMLElement {
   _rules(d) {
     const form = this._ruleDraft ? this._ruleForm(d) : "";
     const add = this._ruleDraft ? "" : `<button class="btn primary" data-action="new-rule">Add rule</button>`;
-    const byRoom = d.rooms.map((room) => {
-      const rules = d.rules.filter((r) => r.room === room.id);
-      if (!rules.length) return "";
-      return `<section class="card"><h3>${esc(room.name)}</h3>${rules.map((r) => this._ruleRow(r)).join("")}</section>`;
-    }).join("");
+    const order = Object.fromEntries(d.rooms.map((r, i) => [r.id, i]));
+    const sorted = [...d.rules].sort((a, b) => (order[a.rooms[0]] ?? 99) - (order[b.rooms[0]] ?? 99) || a.start.localeCompare(b.start));
+    const byRoom = sorted.length ? `<section class="card">${sorted.map((r) => this._ruleRow(r)).join("")}</section>` : "";
     const none = d.rules.length ? "" : `<section class="card empty"><p>No rules yet.</p>
       <p class="muted">Motion sensors can't see people asleep, so start with one for each bedroom:<br>
-      <strong>Keep comfortable, every day, 21:00 – 06:30, 24°</strong>.</p></section>`;
+      <strong>Keep comfortable, every day, 21:00 – 06:30, 24°</strong>. One rule can cover all the bedrooms.</p></section>`;
     return `<div class="row space"><p class="intro">Rules cover what sensors can't see. Times that end earlier than they start run past midnight.</p>${add}</div>${form}${none}${byRoom}`;
   }
 
@@ -538,6 +585,7 @@ class ComfortPilotPanel extends HTMLElement {
       <button class="switch mini ${r.enabled ? "on" : ""}" data-action="toggle-rule" data-value="${esc(r.id)}" role="switch" aria-checked="${r.enabled}" aria-label="Enabled"><span class="knob"></span></button>
       <div class="rule-text">
         <div><strong>${esc(r.name)}</strong> ${r.active && r.enabled ? `<span class="badge comfort">Active now</span>` : ""}</div>
+        <div class="room-tags">${(r.room_names || []).map((n) => `<span class="tag">${esc(n)}</span>`).join("")}</div>
         <div class="muted small">${esc(what)} · ${esc(r.days_text)} · ${esc(r.start)} – ${esc(r.end)}</div>
       </div>
       <button class="btn" data-action="edit-rule" data-value="${esc(r.id)}" ${this._editing() ? "disabled" : ""}>Edit</button>
@@ -547,7 +595,8 @@ class ComfortPilotPanel extends HTMLElement {
 
   _ruleForm(d) {
     const r = this._ruleDraft;
-    const rooms = d.rooms.map((x) => `<option value="${esc(x.id)}" ${r.room === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+    const rooms = d.rooms.map((x) =>
+      `<button class="chip ${r.rooms.includes(x.id) ? "on" : ""}" data-action="toggle-rule-room" data-value="${esc(x.id)}">${esc(x.name)}</button>`).join("");
     const actions = Object.keys(ACTION_LABELS).map((a) =>
       `<button class="chip ${r.action === a ? "on" : ""}" data-action="rule-action" data-value="${a}">${ACTION_LABELS[a]}</button>`).join("");
     const days = DAYS.map((name, i) =>
@@ -559,10 +608,8 @@ class ComfortPilotPanel extends HTMLElement {
       : "";
     return `<section class="card editing">
       <h3>${r.id ? "Edit rule" : "New rule"}</h3>
-      <div class="two">
-        <label class="field"><span>Room</span><select data-field="rule.room">${rooms}</select></label>
-        <label class="field"><span>Name</span><input type="text" data-field="rule.name" value="${esc(r.name)}" placeholder="e.g. Bedroom at night"></label>
-      </div>
+      <div class="field"><span>Rooms</span><div class="chips">${rooms}</div></div>
+      <label class="field"><span>Name</span><input type="text" data-field="rule.name" value="${esc(r.name)}" placeholder="e.g. Bedrooms at night"></label>
       <div class="field"><span>What to do</span><div class="chips">${actions}</div></div>
       <div class="field"><span>Days</span><div class="chips">${days}
         <span class="sep"></span>
@@ -641,21 +688,41 @@ class ComfortPilotPanel extends HTMLElement {
     </section>`;
   }
 
-  // Activity -----------------------------------------------------------
+  // Log ----------------------------------------------------------------
 
-  _activity(d) {
-    const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
-    const fmtUnit = (mode, target) => (mode === "off" ? "Off" : `${cap(String(mode).replace("_", " "))} ${fmtT(target)}`);
-    const rows = d.overrides.map((o) => `<tr>
-      <td>${esc(this._when(o.at))}</td><td>${esc(o.room_name)}</td>
-      <td>${esc(fmtUnit(o.from_mode, o.from_target))} → <strong>${esc(fmtUnit(o.to_mode, o.to_target))}</strong></td>
-      <td>${fmtT(o.room_temp)}</td><td>${fmtT(o.outside)}</td>
-      <td>${o.grid_power === null || o.grid_power === undefined ? "–" : o.grid_power < 0 ? "Solar" : "Grid"}</td></tr>`).join("");
-    return `<p class="intro">Every time you change a unit yourself, Comfort Pilot steps back and notes it here.
-      These ${d.override_count} recorded change${d.override_count === 1 ? "" : "s"} are what the next version learns your preferences from.</p>
-      <section class="card">${rows
-        ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Room</th><th>Change</th><th>Room temp</th><th>Outside</th><th>Power</th></tr></thead><tbody>${rows}</tbody></table></div>`
-        : `<p class="muted">No manual changes yet.</p>`}</section>`;
+  _log(d) {
+    const rooms = [["all", "All rooms"], ["house", "House only"], ...d.rooms.map((r) => [r.id, r.name])];
+    const roomSel = `<select data-log-room>${rooms.map(([v, n]) => `<option value="${esc(v)}" ${this._logRoom === v ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+    const cats = LOG_CATS.map(([k, n]) =>
+      `<button class="chip small ${this._logCat === k ? "on" : ""}" data-action="log-cat" data-value="${k}">${n}</button>`).join("");
+    const entries = (d.log || []).filter((e) =>
+      (this._logCat === "all" || e.category === this._logCat) &&
+      (this._logRoom === "all" || (this._logRoom === "house" ? !e.room : e.room === this._logRoom)));
+    const rows = entries.map((e) => {
+      const id = `${e.at}|${e.category}|${e.room || ""}|${e.message}`;
+      const open = this._logOpen.has(id);
+      const details = e.details ? Object.entries(e.details).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => {
+        let val = v;
+        if (["room_temp", "outside", "forecast_high"].includes(k)) val = fmtT(v);
+        else if (["solar_budget", "grid_power"].includes(k)) val = fmtW(v);
+        else if (typeof v === "boolean") val = v ? "Yes" : "No";
+        else if (typeof v === "object") val = JSON.stringify(v);
+        return `<span class="detail"><span class="muted">${esc(DETAIL_LABELS[k] || k)}</span> ${esc(val)}</span>`;
+      }).join("") : "";
+      return `<div class="log-row ${details ? "has-details" : ""}" ${details ? `data-action="log-toggle" data-value="${esc(id)}"` : ""}>
+        <div class="log-time">${esc(this._when(e.at))}</div>
+        <span class="cat ${esc(e.category)}">${esc(CAT_LABELS[e.category] || e.category)}</span>
+        <div class="log-msg">${e.room_name ? `<strong>${esc(e.room_name)}</strong> · ` : ""}${esc(e.message)}
+          ${open && details ? `<div class="details">${details}</div>` : ""}</div>
+        ${details ? `<span class="chev">${open ? "▾" : "▸"}</span>` : ""}
+      </div>`;
+    }).join("");
+    return `<p class="intro">What Comfort Pilot decided, what it sent to the units, and why. Click a line for the readings at the time.
+      Updates every 15 seconds. ${d.override_count} manual change${d.override_count === 1 ? "" : "s"} recorded so far for learning.</p>
+      <section class="card">
+        <div class="row space log-filters"><div class="chips">${cats}</div>${roomSel}</div>
+        ${rows || `<p class="muted">Nothing logged ${this._logCat === "all" && this._logRoom === "all" ? "yet" : "for this filter"}.</p>`}
+      </section>`;
   }
 }
 
@@ -706,6 +773,31 @@ const STYLES = `
   .room .room-name { font-size:16px; font-weight:500; display:flex; align-items:center; gap:8px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--disabled-color, #bdbdbd); }
   .dot.occ { background:var(--success-color, #43a047); }
+  .dot.pending { background:var(--warning-color, #ffa000); }
+  .room-tags { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0 2px; }
+  .tag { font-size:11px; padding:1px 8px; border-radius:10px; border:1px solid var(--divider-color); color:var(--secondary-text-color); }
+  .log-filters { margin-bottom:8px; }
+  .log-filters select { width:auto; min-width:160px; }
+  .log-row { display:grid; grid-template-columns:130px 110px 1fr 16px; gap:10px; align-items:start; padding:8px 4px;
+    border-top:1px solid var(--divider-color); font-size:14px; }
+  .log-row.has-details { cursor:pointer; }
+  .log-row.has-details:hover { background:rgba(127,127,127,.06); }
+  .log-time { color:var(--secondary-text-color); font-size:13px; white-space:nowrap; }
+  .log-msg { line-height:1.4; word-break:break-word; }
+  .chev { color:var(--secondary-text-color); }
+  .details { display:flex; flex-wrap:wrap; gap:4px 14px; margin-top:6px; font-size:12px; }
+  .cat { font-size:11px; padding:2px 8px; border-radius:10px; background:var(--secondary-background-color, #eee); justify-self:start; white-space:nowrap; }
+  .cat.action { background:rgba(3,169,244,.15); color:#0288d1; }
+  .cat.decision { background:rgba(103,58,183,.13); color:#7e57c2; }
+  .cat.occupancy { background:rgba(67,160,71,.15); color:var(--success-color, #2e7d32); }
+  .cat.manual { background:rgba(33,150,243,.15); color:#1e88e5; }
+  .cat.notify { background:rgba(255,152,0,.15); color:var(--warning-color, #e65100); }
+  .cat.error { background:rgba(244,67,54,.15); color:var(--error-color, #c62828); }
+  @media (max-width: 600px) {
+    .log-row { grid-template-columns:1fr auto; }
+    .log-row .log-msg { grid-column:1 / -1; }
+    .log-row .chev { display:none; }
+  }
   .temps { align-items:baseline; margin:8px 0 4px; }
   .big { font-size:32px; font-weight:300; }
   .unit { color:var(--secondary-text-color); text-transform:capitalize; }

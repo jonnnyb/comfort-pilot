@@ -77,7 +77,7 @@ class Rule:
     """A schedule rule, created by the user or (later) learned."""
 
     id: str
-    room: str  # climate entity id
+    rooms: list[str]  # climate entity ids
     name: str
     days: list[int]  # 0 = Monday
     start: time
@@ -89,9 +89,12 @@ class Rule:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Rule":
+        rooms = data.get("rooms") or ([data["room"]] if data.get("room") else [])
+        if not rooms:
+            raise ValueError("Rule has no rooms")
         return cls(
             id=data["id"],
-            room=data["room"],
+            rooms=list(rooms),
             name=data.get("name") or "Rule",
             days=[int(d) for d in data.get("days", list(range(7)))],
             start=parse_time(data["start"]),
@@ -160,6 +163,23 @@ class Rule:
         return ", ".join(DAY_NAMES[i] for i in d)
 
 
+def rule_rooms(raw: dict) -> list[str]:
+    """Rooms of a stored rule dict (handles the old single-room format)."""
+    return list(raw.get("rooms") or ([raw["room"]] if raw.get("room") else []))
+
+
+def prune_rules(raw_rules: list[dict], rooms) -> list[dict]:
+    """Drop removed rooms from rules, and rules left with no rooms."""
+    out = []
+    for raw in raw_rules:
+        kept = [r for r in rule_rooms(raw) if r in rooms]
+        if kept:
+            new = {k: v for k, v in raw.items() if k != "room"}
+            new["rooms"] = kept
+            out.append(new)
+    return out
+
+
 @dataclass
 class RoomConfig:
     climate_id: str
@@ -171,6 +191,7 @@ class RoomConfig:
     priority: str = "normal"
     est_power: float = 900.0  # watts while running, used to share solar
     occupancy_timeout: int = 20  # minutes a room stays "occupied" after motion
+    occupancy_delay: int = 3  # minutes motion must continue before a room counts as occupied
 
 
 @dataclass
@@ -185,6 +206,7 @@ class RoomState:
     step: float = 0.5
     has_occupancy_sensor: bool = False
     occupied_now: bool = False
+    occupancy_pending: bool = False  # motion seen, waiting to confirm
     last_occupied: datetime | None = None
     window_open: bool = False
     room_mode: str = ROOM_AUTO
@@ -241,6 +263,7 @@ class Decision:
     target: float | None
     level: str
     reason: str
+    forced: bool = False  # must happen now, even inside minimum run/off times
 
 
 @dataclass
@@ -366,8 +389,8 @@ def decide(
             decisions[room_id] = Decision(room_id, None, None, LEVEL_PAUSED, "Unit unavailable")
             continue
 
-        def done(mode, level, reason, target=None):
-            decisions[room_id] = Decision(room_id, mode, target, level, reason)
+        def done(mode, level, reason, target=None, forced=False):
+            decisions[room_id] = Decision(room_id, mode, target, level, reason, forced)
 
         if house.house_mode == HOUSE_PAUSED:
             done(None, LEVEL_PAUSED, "Comfort Pilot paused")
@@ -376,34 +399,34 @@ def decide(
             done(None, LEVEL_HOLD, f"Manual change – resuming at {st.hold_until.strftime('%H:%M')}")
             continue
         if st.room_mode == ROOM_OFF:
-            done(HVAC_OFF, LEVEL_OFF, "Room set to off")
+            done(HVAC_OFF, LEVEL_OFF, "Room set to off", forced=True)
             continue
         if house.house_mode == HOUSE_OFF:
-            done(HVAC_OFF, LEVEL_OFF, "House set to off")
+            done(HVAC_OFF, LEVEL_OFF, "House set to off", forced=True)
             continue
 
         t = st.current_temp
         if t is not None and not st.window_open:
             if t >= settings.safety_max and HVAC_COOL in st.hvac_modes:
                 done(HVAC_COOL, LEVEL_SAFETY, f"Safety: room at {_fmt_t(t)}",
-                     _setpoint(HVAC_COOL, LEVEL_SAFETY, cfg, st, None))
+                     _setpoint(HVAC_COOL, LEVEL_SAFETY, cfg, st, None), forced=True)
                 continue
             if t <= settings.safety_min and HVAC_HEAT in st.hvac_modes:
                 done(HVAC_HEAT, LEVEL_SAFETY, f"Safety: room at {_fmt_t(t)}",
-                     _setpoint(HVAC_HEAT, LEVEL_SAFETY, cfg, st, None))
+                     _setpoint(HVAC_HEAT, LEVEL_SAFETY, cfg, st, None), forced=True)
                 continue
 
         if st.window_open:
-            done(HVAC_OFF, LEVEL_OFF, "Window open")
+            done(HVAC_OFF, LEVEL_OFF, "Window open", forced=True)
             continue
         if house.fresh_air:
-            done(HVAC_OFF, LEVEL_OFF, "Fresh air mode")
+            done(HVAC_OFF, LEVEL_OFF, "Fresh air mode", forced=True)
             continue
         if away:
-            done(HVAC_OFF, LEVEL_OFF, "Nobody home")
+            done(HVAC_OFF, LEVEL_OFF, "Nobody home", forced=house.house_mode == HOUSE_AWAY)
             continue
 
-        room_rules = [r for r in rules if r.room == room_id and r.enabled]
+        room_rules = [r for r in rules if room_id in r.rooms and r.enabled]
         active = [r for r in room_rules if r.active_at(now)]
         if any(r.action == RULE_OFF for r in active):
             name = next(r.name for r in active if r.action == RULE_OFF)
@@ -441,7 +464,8 @@ def decide(
                 r, s = min(upcoming, key=lambda x: x[1])
                 need, why = NEED_UPCOMING, f"{r.name} starts {s.strftime('%H:%M')}"
             else:
-                done(HVAC_OFF, LEVEL_OFF, "Unoccupied")
+                reason = "Motion detected – confirming" if st.occupancy_pending else "Unoccupied"
+                done(HVAC_OFF, LEVEL_OFF, reason)
                 continue
 
         if comfort_rule is not None and comfort_rule.target is not None:

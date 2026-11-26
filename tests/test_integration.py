@@ -114,10 +114,12 @@ async def world(hass: HomeAssistant):
     return fake
 
 
-def make_entry(rules=None, settings=None):
+def make_entry(rules=None, settings=None, occupancy_delay=0):
     rooms = {
-        OFFICE: {"name": "Office", "occupancy_sensors": ["binary_sensor.office_motion"], "window_sensors": []},
-        BEDROOM: {"name": "Bedroom", "occupancy_sensors": ["binary_sensor.bedroom_motion"], "window_sensors": []},
+        OFFICE: {"name": "Office", "occupancy_sensors": ["binary_sensor.office_motion"], "window_sensors": [],
+                 "occupancy_delay": occupancy_delay},
+        BEDROOM: {"name": "Bedroom", "occupancy_sensors": ["binary_sensor.bedroom_motion"], "window_sensors": [],
+                  "occupancy_delay": occupancy_delay},
     }
     return MockConfigEntry(
         domain=DOMAIN,
@@ -344,7 +346,7 @@ async def test_options_add_and_remove_rule(hass, world):
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_rule"})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"room": BEDROOM, "name": "Bedroom night", "action": "comfort", "days": ["0", "1", "2", "3", "4", "5", "6"],
+        {"rooms": [BEDROOM, OFFICE], "name": "Bedroom night", "action": "comfort", "days": ["0", "1", "2", "3", "4", "5", "6"],
          "start": "21:00:00", "end": "06:30:00", "target": 24},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -394,3 +396,106 @@ async def test_options_room_edit_and_settings(hass, world):
 def test_detect_room_without_area(hass):
     room = detect_room(hass, "climate.nowhere")
     assert room["name"] == "Nowhere" and room["occupancy_sensors"] == []
+
+
+# --- occupancy confirmation, cycle protection, log (v0.3) -------------------
+
+async def _tick(hass, freezer, coordinator, minutes):
+    freezer.tick(timedelta(minutes=minutes))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+
+async def test_walk_through_does_not_start_ac(hass, world, freezer):
+    c = await setup(hass, make_entry(occupancy_delay=3))
+    # Office motion is on, but not confirmed yet.
+    assert hass.states.get(OFFICE).state == "off"
+    assert "Motion detected – confirming" in hass.states.get("sensor.comfort_pilot_office_status").state
+    # Walks out after a minute.
+    freezer.tick(timedelta(minutes=1))
+    hass.states.async_set("binary_sensor.office_motion", "off", {"device_class": "motion"})
+    await hass.async_block_till_done()
+    await _tick(hass, freezer, c, 4)
+    assert hass.states.get(OFFICE).state == "off"
+    assert hass.states.get("sensor.comfort_pilot_office_status").state == "Unoccupied"
+    messages = [e["message"] for e in c.log if e.get("room") == OFFICE]
+    assert "Motion detected – waiting 3 min to confirm" in messages
+    assert "Motion didn't continue – ignored" in messages
+
+
+async def test_sustained_motion_confirms_occupancy(hass, world, freezer):
+    c = await setup(hass, make_entry(occupancy_delay=3))
+    assert hass.states.get(OFFICE).state == "off"
+    # Still there 3 minutes later (motion sensor still on / retriggered).
+    await _tick(hass, freezer, c, 3)
+    assert hass.states.get(OFFICE).state == "cool"
+    assert "Occupied" in [e["message"] for e in c.log if e.get("room") == OFFICE]
+
+
+async def test_minimum_run_and_off_times(hass, world, freezer):
+    entry = make_entry(settings={"min_run_minutes": 10, "min_off_minutes": 5})
+    entry.options["rooms"][OFFICE]["occupancy_timeout"] = 1
+    c = await setup(hass, entry)
+    assert hass.states.get(OFFICE).state == "cool"
+
+    # Leaves after a minute: room becomes unoccupied, but the unit keeps running.
+    freezer.tick(timedelta(minutes=1))
+    hass.states.async_set("binary_sensor.office_motion", "off", {"device_class": "motion"})
+    await hass.async_block_till_done()
+    await _tick(hass, freezer, c, 3)
+    assert hass.states.get(OFFICE).state == "cool"
+    assert "minimum run time" in hass.states.get("sensor.comfort_pilot_office_status").state
+
+    await _tick(hass, freezer, c, 7)  # 11 minutes since it started
+    assert hass.states.get(OFFICE).state == "off"
+
+    # Walks straight back in: has to wait for the minimum off time.
+    hass.states.async_set("binary_sensor.office_motion", "on", {"device_class": "motion"})
+    await hass.async_block_till_done()
+    await c.async_refresh()
+    assert hass.states.get(OFFICE).state == "off"
+    assert "minimum off time" in hass.states.get("sensor.comfort_pilot_office_status").state
+    await _tick(hass, freezer, c, 5)
+    assert hass.states.get(OFFICE).state == "cool"
+
+
+async def test_window_bypasses_minimum_run(hass, world, freezer):
+    entry = make_entry(settings={"min_run_minutes": 30})
+    entry.options["rooms"][OFFICE]["window_sensors"] = ["binary_sensor.office_window"]
+    hass.states.async_set("binary_sensor.office_window", "off", {"device_class": "window"})
+    c = await setup(hass, entry)
+    hass.states.async_set("binary_sensor.office_window", "on", {"device_class": "window"})
+    await hass.async_block_till_done()
+    await _tick(hass, freezer, c, 3)
+    assert hass.states.get(OFFICE).state == "off"
+
+
+async def test_event_log_records_actions_and_manual_changes(hass, world):
+    c = await setup(hass, make_entry())
+    cats = {(e["category"], e.get("room")) for e in c.log}
+    assert ("action", OFFICE) in cats and ("decision", OFFICE) in cats
+    action = next(e for e in c.log if e["category"] == "action")
+    assert action["message"] == "Sent: cool 23°"
+    c._expected[OFFICE].at -= timedelta(minutes=5)
+    world.set_unit(OFFICE, mode="cool", target=21.0)
+    await hass.async_block_till_done()
+    manual = [e for e in c.log if e["category"] == "manual"]
+    assert manual and manual[-1]["message"].startswith("Changed by hand: cool 23° → cool 21°")
+    # Decisions are only logged when they change.
+    count = len([e for e in c.log if e["category"] == "decision"])
+    await c.async_refresh()
+    await c.async_refresh()
+    assert len([e for e in c.log if e["category"] == "decision"]) <= count + 1
+
+
+async def test_log_and_occupancy_survive_restart(hass, world):
+    entry = make_entry()
+    c = await setup(hass, entry)
+    assert c._confirmed.get(OFFICE)
+    n = len(c.log)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    c2 = entry.runtime_data
+    assert c2._confirmed.get(OFFICE) and len(c2.log) >= n

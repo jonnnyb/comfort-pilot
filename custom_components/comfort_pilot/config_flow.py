@@ -46,16 +46,22 @@ from .const import (
     ROOM_HEAT_MAX,
     ROOM_HEAT_MIN,
     ROOM_NAME,
+    ROOM_OCC_DELAY,
     ROOM_OCC_TIMEOUT,
     ROOM_OCCUPANCY,
     ROOM_POWER,
     ROOM_PRIORITY,
     ROOM_WINDOWS,
+    DEFAULT_MIN_OFF,
+    DEFAULT_MIN_RUN,
+    DEFAULT_OCC_DELAY,
     SET_HOLD_MINUTES,
+    SET_MIN_OFF,
+    SET_MIN_RUN,
     SET_QUIET_END,
     SET_QUIET_START,
 )
-from .engine import DAY_NAMES, RULE_ACTIONS, RULE_COMFORT, Rule, Settings
+from .engine import DAY_NAMES, RULE_ACTIONS, RULE_COMFORT, Rule, Settings, prune_rules
 
 OCCUPANCY_CLASSES = ("motion", "occupancy", "presence")
 WINDOW_CLASSES = ("window",)
@@ -109,6 +115,7 @@ def detect_room(hass: HomeAssistant, climate_id: str) -> dict[str, Any]:
         ROOM_PRIORITY: "normal",
         ROOM_POWER: 900,
         ROOM_OCC_TIMEOUT: 20,
+        ROOM_OCC_DELAY: DEFAULT_OCC_DELAY,
     }
 
 
@@ -270,6 +277,7 @@ class ComfortPilotOptionsFlow(OptionsFlow):
                 updated.setdefault(ROOM_WINDOWS, [])
                 updated[ROOM_POWER] = int(updated[ROOM_POWER])
                 updated[ROOM_OCC_TIMEOUT] = int(updated[ROOM_OCC_TIMEOUT])
+                updated[ROOM_OCC_DELAY] = int(updated.get(ROOM_OCC_DELAY, DEFAULT_OCC_DELAY))
                 rooms[room] = updated
                 return self._save(**{OPT_ROOMS: rooms})
             current = {**current, **user_input}
@@ -291,6 +299,7 @@ class ComfortPilotOptionsFlow(OptionsFlow):
                     SelectSelectorConfig(options=["high", "normal", "low"], translation_key="priority")
                 ),
                 vol.Required(ROOM_POWER, default=current.get(ROOM_POWER, 900)): _number(100, 5000, 50, "W"),
+                vol.Required(ROOM_OCC_DELAY, default=current.get(ROOM_OCC_DELAY, DEFAULT_OCC_DELAY)): _number(0, 30, 1, "min"),
                 vol.Required(ROOM_OCC_TIMEOUT, default=current.get(ROOM_OCC_TIMEOUT, 20)): _number(1, 240, 1, "min"),
             }
         )
@@ -306,14 +315,16 @@ class ComfortPilotOptionsFlow(OptionsFlow):
     async def async_step_add_rule(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if not user_input.get("days"):
+            if not user_input.get("rooms"):
+                errors["rooms"] = "no_rooms"
+            elif not user_input.get("days"):
                 errors["days"] = "no_days"
             elif user_input["start"] == user_input["end"]:
                 errors["end"] = "same_time"
             else:
                 rule = {
                     "id": uuid.uuid4().hex[:8],
-                    "room": user_input["room"],
+                    "rooms": list(user_input["rooms"]),
                     "name": user_input["name"].strip() or "Rule",
                     "days": sorted(int(d) for d in user_input["days"]),
                     "start": user_input["start"],
@@ -330,8 +341,8 @@ class ComfortPilotOptionsFlow(OptionsFlow):
         defaults = user_input or {}
         schema = vol.Schema(
             {
-                vol.Required("room", default=defaults.get("room", vol.UNDEFINED)): SelectSelector(
-                    SelectSelectorConfig(options=self._room_options())
+                vol.Required("rooms", default=defaults.get("rooms", [])): SelectSelector(
+                    SelectSelectorConfig(options=self._room_options(), multiple=True)
                 ),
                 vol.Required("name", default=defaults.get("name", "")): TextSelector(),
                 vol.Required("action", default=defaults.get("action", RULE_COMFORT)): SelectSelector(
@@ -358,8 +369,8 @@ class ComfortPilotOptionsFlow(OptionsFlow):
         options = []
         for raw in rules:
             rule = Rule.from_dict(raw)
-            room_name = rooms.get(rule.room, {}).get(ROOM_NAME, rule.room)
-            options.append(SelectOptionDict(value=rule.id, label=f"{room_name} – {rule.describe()}"))
+            room_names = ", ".join(rooms.get(r, {}).get(ROOM_NAME, r) for r in rule.rooms)
+            options.append(SelectOptionDict(value=rule.id, label=f"{room_names} – {rule.describe()}"))
         schema = vol.Schema(
             {vol.Optional("rules", default=[]): SelectSelector(
                 SelectSelectorConfig(options=options, multiple=True, mode=SelectSelectorMode.LIST)
@@ -390,6 +401,8 @@ class ComfortPilotOptionsFlow(OptionsFlow):
                 vol.Required("fresh_air_delta", default=d("fresh_air_delta", 2)): _number(0.5, 10, 0.5, "°C"),
                 vol.Required("fresh_air_min_indoor", default=d("fresh_air_min_indoor", 24)): _temp(15, 32),
                 vol.Required(SET_HOLD_MINUTES, default=current.get(SET_HOLD_MINUTES, DEFAULT_HOLD_MINUTES)): _number(10, 720, 10, "min"),
+                vol.Required(SET_MIN_RUN, default=current.get(SET_MIN_RUN, DEFAULT_MIN_RUN)): _number(0, 60, 1, "min"),
+                vol.Required(SET_MIN_OFF, default=current.get(SET_MIN_OFF, DEFAULT_MIN_OFF)): _number(0, 60, 1, "min"),
                 vol.Required(SET_QUIET_START, default=current.get(SET_QUIET_START, DEFAULT_QUIET_START)): TimeSelector(),
                 vol.Required(SET_QUIET_END, default=current.get(SET_QUIET_END, DEFAULT_QUIET_END)): TimeSelector(),
             }
@@ -408,7 +421,7 @@ class ComfortPilotOptionsFlow(OptionsFlow):
                 for climate in user_input[CONF_CLIMATES]:
                     rooms.setdefault(climate, detect_room(self.hass, climate))
                 rooms = {k: v for k, v in rooms.items() if k in user_input[CONF_CLIMATES]}
-                rules = [r for r in self._options[OPT_RULES] if r["room"] in rooms]
+                rules = prune_rules(self._options[OPT_RULES], rooms)
                 return self._save(**{OPT_ROOMS: rooms, OPT_RULES: rules})
         defaults = user_input or dict(self.config_entry.data)
         return self.async_show_form(
