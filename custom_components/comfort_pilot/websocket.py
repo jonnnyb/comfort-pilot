@@ -297,6 +297,16 @@ def ws_get(hass, connection, msg):
     connection.send_result(msg["id"], build_payload(c))
 
 
+@websocket_api.websocket_command({vol.Required("type"): "comfort_pilot/overview"})
+@callback
+def ws_overview(hass, connection, msg):
+    """Just what the dashboard card needs (no log, rules or settings)."""
+    if (c := _coordinator(hass, connection, msg)) is None:
+        return
+    p = build_payload(c)
+    connection.send_result(msg["id"], {"house": p["house"], "rooms": p["rooms"], "choices": p["choices"]})
+
+
 @websocket_api.websocket_command(
     {vol.Required("type"): "comfort_pilot/set_house_mode", vol.Required("mode"): vol.In(HOUSE_MODES)}
 )
@@ -490,6 +500,7 @@ async def ws_save_sources(hass, connection, msg):
 
 COMMANDS = (
     ws_get,
+    ws_overview,
     ws_set_house_mode,
     ws_set_room_mode,
     ws_set_fresh_air,

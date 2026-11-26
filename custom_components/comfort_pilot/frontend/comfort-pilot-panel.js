@@ -1,5 +1,9 @@
 /* Comfort Pilot sidebar panel. Plain web component, no external dependencies. */
 
+import {
+  BASE_STYLES, LEVEL_LABELS, actionMessage, esc, fireMoreInfo, fmtT, fmtW, renderHouse, renderRoomTile, when,
+} from "./comfort-pilot-common.js?v=0.4.0";
+
 const TABS = [
   ["overview", "Overview"],
   ["rooms", "Rooms"],
@@ -16,21 +20,7 @@ const DETAIL_LABELS = {
   level: "Level", room_temp: "Room temp", occupied: "Occupied", solar_budget: "Solar budget",
   grid_power: "Grid", outside: "Outside", forecast_high: "Forecast high", service: "Service", data: "Sent",
 };
-const HOUSE_LABELS = { auto: "Auto", home: "Home", away: "Away", boost: "Boost", off: "Off", paused: "Paused" };
-const HOUSE_HELP = {
-  auto: "Follows who's home",
-  home: "Assume someone's home",
-  away: "Everything off",
-  boost: "Comfortable end, minus 1°",
-  off: "All units off",
-  paused: "Hands off – units left alone",
-};
-const ROOM_LABELS = { auto: "Auto", comfort: "Comfort", eco: "Eco", off: "Off" };
 const ACTION_LABELS = { comfort: "Keep comfortable", eco: "Economy only", off: "Keep off" };
-const LEVEL_LABELS = {
-  comfort: "Comfort", eco: "Eco", boost: "Boost", rule: "Rule", safety: "Safety",
-  off: "Off", hold: "Manual", paused: "Paused", precondition: "Pre-cooling",
-};
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const OCC_CLASSES = ["motion", "occupancy", "presence"];
 const WINDOW_CLASSES = ["window", "door", "opening", "garage_door"];
@@ -68,10 +58,6 @@ const SETTINGS_GROUPS = [
   ]],
 ];
 
-const esc = (v) =>
-  String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmtT = (v) => (v === null || v === undefined ? "–" : `${Number(v).toFixed(1).replace(/\.0$/, "")}°`);
-const fmtW = (v) => (v === null || v === undefined ? "–" : Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)} kW` : `${Math.round(v)} W`);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
 class ComfortPilotPanel extends HTMLElement {
@@ -170,17 +156,14 @@ class ComfortPilotPanel extends HTMLElement {
         this._tab = v;
         this._render();
         break;
+      case "more-info":
+        fireMoreInfo(this, el.dataset.entity);
+        break;
       case "house-mode":
-        await this._ws({ type: "comfort_pilot/set_house_mode", mode: v });
-        break;
       case "fresh-air":
-        await this._ws({ type: "comfort_pilot/set_fresh_air", on: !this._data.house.fresh_air });
-        break;
       case "room-mode":
-        await this._ws({ type: "comfort_pilot/set_room_mode", room, mode: v });
-        break;
       case "resume":
-        await this._ws({ type: "comfort_pilot/resume", room }, "Back on auto");
+        await this._ws(actionMessage(el, this._data), a === "resume" ? "Back on auto" : undefined);
         break;
       case "log-cat":
         this._logCat = v;
@@ -365,15 +348,6 @@ class ComfortPilotPanel extends HTMLElement {
     return dev ? dev.area_id : null;
   }
 
-  _when(iso) {
-    if (!iso) return "";
-    const d = new Date(iso);
-    const today = new Date();
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (d.toDateString() === today.toDateString()) return `Today ${time}`;
-    return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
-  }
-
   // ----------------------------------------------------------- render
 
   _render() {
@@ -395,7 +369,7 @@ class ComfortPilotPanel extends HTMLElement {
     }
     const tabs = TABS.map(([k, label]) =>
       `<button class="tab ${k === this._tab ? "active" : ""}" data-action="tab" data-value="${k}">${label}</button>`).join("");
-    this.shadowRoot.innerHTML = `<style>${STYLES}</style>
+    this.shadowRoot.innerHTML = `<style>${BASE_STYLES}${STYLES}</style>
       <div class="toolbar">
         ${this._narrow ? `<button class="icon" data-action="menu" aria-label="Menu">☰</button>` : ""}
         <div class="title">Comfort Pilot</div>
@@ -408,75 +382,9 @@ class ComfortPilotPanel extends HTMLElement {
   // Overview -----------------------------------------------------------
 
   _overview(d) {
-    const h = d.house;
-    const grid = h.grid_power;
-    const gridText = grid === null || grid === undefined ? "–" : grid < 0 ? `Exporting ${fmtW(-grid)}` : `Importing ${fmtW(grid)}`;
-    const modes = d.choices.house_modes.map((m) =>
-      `<button class="chip ${h.mode === m ? "on" : ""}" data-action="house-mode" data-value="${m}" title="${esc(HOUSE_HELP[m])}">${HOUSE_LABELS[m]}</button>`).join("");
-    const advice = h.advice === "open"
-      ? `<div class="banner">It's ${fmtT(h.outside)} outside and ${fmtT(h.inside)} inside – a good time for the evap on fan or open windows.</div>`
-      : h.advice === "close"
-        ? `<div class="banner warn">Outside (${fmtT(h.outside)}) is now warmer than inside (${fmtT(h.inside)}) – time to close up.</div>`
-        : "";
-    const house = `
-      <section class="card">
-        <div class="row space">
-          <div>
-            <div class="label">House mode</div>
-            <div class="chips">${modes}</div>
-            <div class="muted small">${esc(HOUSE_HELP[h.mode])}</div>
-          </div>
-          <button class="switch ${h.fresh_air ? "on" : ""}" data-action="fresh-air" role="switch" aria-checked="${h.fresh_air}">
-            <span class="knob"></span><span class="switch-label">Fresh air mode</span>
-          </button>
-        </div>
-        ${advice}
-        <div class="stats">
-          ${this._stat("Solar for comfort", fmtW(h.solar_budget))}
-          ${this._stat("Grid", gridText)}
-          ${this._stat("Outside", fmtT(h.outside))}
-          ${this._stat("Inside (avg)", fmtT(h.inside))}
-          ${this._stat("Forecast", `${fmtT(h.forecast_high)} / ${fmtT(h.forecast_low)}`)}
-          ${this._stat("Season", h.season.charAt(0).toUpperCase() + h.season.slice(1))}
-        </div>
-      </section>`;
-    const rooms = d.rooms.map((r) => this._roomCard(r)).join("");
+    const house = `<section class="card">${renderHouse(d)}</section>`;
+    const rooms = d.rooms.map((r) => `<section class="card">${renderRoomTile(r)}</section>`).join("");
     return house + `<div class="grid">${rooms}</div>`;
-  }
-
-  _stat(label, value) {
-    return `<div class="stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
-  }
-
-  _roomCard(r) {
-    const st = r.state || {};
-    const dec = r.decision || {};
-    const level = dec.level || "off";
-    const running = st.hvac_mode && st.hvac_mode !== "off";
-    const unit = st.available === false ? "Unavailable"
-      : running ? `${st.hvac_mode.replace("_", " ")} ${fmtT(st.target)}` : "Off";
-    const modes = Object.keys(ROOM_LABELS).map((m) =>
-      `<button class="chip small ${r.mode === m ? "on" : ""}" data-action="room-mode" data-room="${esc(r.id)}" data-value="${m}">${ROOM_LABELS[m]}</button>`).join("");
-    const occ = st.has_occupancy_sensor
-      ? `<span class="dot ${st.occupied ? "occ" : st.occupancy_pending ? "pending" : ""}"
-           title="${st.occupied ? "Occupied" : st.occupancy_pending ? "Motion – confirming" : "No one detected"}"></span>`
-      : "";
-    const hold = r.hold_until
-      ? `<div class="hold">Manual change – resumes ${esc(this._when(r.hold_until))}
-           <button class="link" data-action="resume" data-room="${esc(r.id)}">Resume now</button></div>`
-      : "";
-    return `<section class="card room">
-      <div class="row space">
-        <div class="room-name">${occ}${esc(r.name)}</div>
-        <span class="badge ${level}">${LEVEL_LABELS[level] || level}</span>
-      </div>
-      <div class="row temps">
-        <div class="big">${fmtT(st.current_temp)}</div>
-        <div class="unit">${esc(unit)}</div>
-      </div>
-      ${hold || `<div class="reason">${esc(dec.reason || "")}</div>`}
-      <div class="chips">${modes}</div>
-    </section>`;
   }
 
   // Rooms --------------------------------------------------------------
@@ -714,7 +622,7 @@ class ComfortPilotPanel extends HTMLElement {
         return `<span class="detail"><span class="muted">${esc(DETAIL_LABELS[k] || k)}</span> ${esc(val)}</span>`;
       }).join("") : "";
       return `<div class="log-row ${details ? "has-details" : ""}" ${details ? `data-action="log-toggle" data-value="${esc(id)}"` : ""}>
-        <div class="log-time">${esc(this._when(e.at))}</div>
+        <div class="log-time">${esc(when(e.at))}</div>
         <span class="cat ${esc(e.category)}">${esc(CAT_LABELS[e.category] || e.category)}</span>
         <div class="log-msg">${e.room_name ? `<strong>${esc(e.room_name)}</strong> · ` : ""}${esc(e.message)}
           ${open && details ? `<div class="details">${details}</div>` : ""}</div>
@@ -751,33 +659,8 @@ const STYLES = `
   h4 { margin:16px 0 2px; font-size:15px; font-weight:500; }
   .group:first-child h4 { margin-top:0; }
   .intro { color:var(--secondary-text-color); margin:4px 0 16px; line-height:1.5; }
-  .muted { color:var(--secondary-text-color); }
-  .small { font-size:12px; }
-  .label { color:var(--secondary-text-color); font-size:12px; margin-bottom:4px; }
-  .row { display:flex; align-items:center; gap:12px; }
-  .row.space { justify-content:space-between; flex-wrap:wrap; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:16px; }
   .grid .card { margin-bottom:0; }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px; margin-top:16px;
-    border-top:1px solid var(--divider-color); padding-top:12px; }
-  .stat .value { font-size:18px; }
-  .chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0; }
-  .chip { border:1px solid var(--divider-color); background:none; color:var(--primary-text-color); border-radius:16px; padding:6px 12px;
-    font-size:13px; cursor:pointer; font-family:inherit; }
-  .chip.small { padding:4px 10px; font-size:12px; }
-  .chip.on { background:var(--primary-color); border-color:var(--primary-color); color:var(--text-primary-color, #fff); }
-  .switch { display:flex; align-items:center; gap:10px; background:none; border:none; cursor:pointer; color:var(--primary-text-color);
-    font-family:inherit; font-size:14px; padding:4px; }
-  .switch .knob { width:36px; height:20px; border-radius:10px; background:var(--disabled-color, #bdbdbd); position:relative; transition:background .2s; flex:none; }
-  .switch .knob::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:transform .2s; }
-  .switch.on .knob { background:var(--primary-color); }
-  .switch.on .knob::after { transform:translateX(16px); }
-  .banner { margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(3,169,244,.12); }
-  .banner.warn { background:rgba(255,152,0,.15); }
-  .room .room-name { font-size:16px; font-weight:500; display:flex; align-items:center; gap:8px; }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--disabled-color, #bdbdbd); }
-  .dot.occ { background:var(--success-color, #43a047); }
-  .dot.pending { background:var(--warning-color, #ffa000); }
+  .tab:focus-visible, .chip:focus-visible, .btn:focus-visible { outline:2px solid var(--primary-color); outline-offset:2px; }
   .room-tags { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0 2px; }
   .tag { font-size:11px; padding:1px 8px; border-radius:10px; border:1px solid var(--divider-color); color:var(--secondary-text-color); }
   .log-filters { margin-bottom:8px; }
@@ -802,17 +685,6 @@ const STYLES = `
     .log-row .log-msg { grid-column:1 / -1; }
     .log-row .chev { display:none; }
   }
-  .temps { align-items:baseline; margin:8px 0 4px; }
-  .big { font-size:32px; font-weight:300; }
-  .unit { color:var(--secondary-text-color); text-transform:capitalize; }
-  .reason { color:var(--secondary-text-color); font-size:13px; min-height:18px; margin-bottom:8px; }
-  .hold { font-size:13px; background:rgba(33,150,243,.12); padding:6px 8px; border-radius:6px; margin-bottom:8px; }
-  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:var(--secondary-background-color, #eee); color:var(--primary-text-color); white-space:nowrap; }
-  .badge.comfort, .badge.precondition { background:rgba(67,160,71,.18); color:var(--success-color, #2e7d32); }
-  .badge.eco { background:rgba(255,152,0,.18); color:var(--warning-color, #e65100); }
-  .badge.boost, .badge.rule { background:rgba(103,58,183,.15); color:#7e57c2; }
-  .badge.safety { background:rgba(244,67,54,.15); color:var(--error-color, #c62828); }
-  .badge.hold { background:rgba(33,150,243,.15); color:#1e88e5; }
   .facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px 16px; font-size:14px; }
   .facts .label { display:inline; margin-right:4px; }
   .btn { border:1px solid var(--divider-color); background:none; color:var(--primary-color); border-radius:8px; padding:8px 14px; cursor:pointer;
@@ -820,7 +692,6 @@ const STYLES = `
   .btn.primary { background:var(--primary-color); color:var(--text-primary-color, #fff); border-color:var(--primary-color); }
   .btn.danger { color:var(--error-color, #c62828); }
   .btn:disabled { opacity:.4; cursor:default; }
-  .link { background:none; border:none; color:var(--primary-color); cursor:pointer; font-size:13px; padding:2px 4px; font-family:inherit; }
   .sep { width:8px; }
   .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
   .field { display:flex; flex-direction:column; gap:4px; margin-top:12px; font-size:14px; }

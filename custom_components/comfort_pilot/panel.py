@@ -16,6 +16,8 @@ STATIC_URL = "/comfort_pilot_static"
 STATIC_KEY = f"{DOMAIN}_static_registered"
 PANEL_KEY = f"{DOMAIN}_panel_registered"
 WS_KEY = f"{DOMAIN}_ws_registered"
+CARD_KEY = f"{DOMAIN}_card_registered"
+CARD_URL = f"{STATIC_URL}/comfort-pilot-card.js?v={VERSION}"
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
@@ -44,12 +46,20 @@ async def async_register_panel(hass: HomeAssistant) -> None:
                 config={},
             )
             hass.data[PANEL_KEY] = True
+        if not hass.data.get(CARD_KEY):
+            from homeassistant.components import frontend
+
+            # Loads the dashboard card on every page, so it shows up in "Add card".
+            frontend.add_extra_js_url(hass, CARD_URL)
+            hass.data[CARD_KEY] = True
     except Exception as err:  # noqa: BLE001 - the integration still works without the panel
         _LOGGER.warning("Could not add the Comfort Pilot panel to the sidebar: %s", err)
 
 
 def async_unregister_panel(hass: HomeAssistant) -> None:
-    if hass.data.pop(PANEL_KEY, None):
-        from homeassistant.components import frontend
+    from homeassistant.components import frontend
 
+    if hass.data.pop(PANEL_KEY, None):
         frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+    if hass.data.pop(CARD_KEY, None):
+        frontend.remove_extra_js_url(hass, CARD_URL)

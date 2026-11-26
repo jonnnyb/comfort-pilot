@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 
-from custom_components.comfort_pilot.const import OPT_RULES
+from pathlib import Path
+import re
+
+from custom_components.comfort_pilot.const import OPT_RULES, VERSION
 
 from .test_integration import BEDROOM, OFFICE, make_entry, setup, world  # noqa: F401
 
@@ -150,7 +153,9 @@ async def test_panel_registered_and_removed(hass, world):
     hass.http = MagicMock()
     hass.http.async_register_static_paths = AsyncMock()
     with patch("homeassistant.components.panel_custom.async_register_panel", AsyncMock()) as reg, \
-         patch("homeassistant.components.frontend.async_remove_panel") as remove:
+         patch("homeassistant.components.frontend.async_remove_panel") as remove, \
+         patch("homeassistant.components.frontend.add_extra_js_url") as add_js, \
+         patch("homeassistant.components.frontend.remove_extra_js_url") as remove_js:
         entry = make_entry()
         await setup(hass, entry)
         reg.assert_awaited_once()
@@ -160,7 +165,29 @@ async def test_panel_registered_and_removed(hass, world):
         assert kwargs["module_url"].startswith("/comfort_pilot_static/comfort-pilot-panel.js?v=")
         static = hass.http.async_register_static_paths.await_args.args[0][0]
         assert static.path.endswith("frontend")
+        assert add_js.call_args.args[1] == f"/comfort_pilot_static/comfort-pilot-card.js?v={VERSION}"
         assert await hass.config_entries.async_unload(entry.entry_id)
         remove.assert_called_once()
+        remove_js.assert_called_once()
     hass.http = None
     hass.data.pop(panel.STATIC_KEY, None)
+
+
+async def test_overview_command(hass, world, hass_ws_client, hass_read_only_access_token):
+    await setup(hass, make_entry())
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    res = await _ws(client, 1, type="comfort_pilot/overview")
+    assert res["success"], res
+    assert set(res["result"]) == {"house", "rooms", "choices"}
+    assert res["result"]["rooms"][0]["id"] == OFFICE
+    # Non-admins can still use the card's buttons.
+    res = await _ws(client, 2, type="comfort_pilot/set_room_mode", room=OFFICE, mode="eco")
+    assert res["success"]
+
+
+def test_js_imports_pin_current_version():
+    """Browsers cache the shared module by URL, so every import must carry the release version."""
+    frontend = Path(__file__).parent.parent / "custom_components/comfort_pilot/frontend"
+    for js in frontend.glob("*.js"):
+        for ver in re.findall(r"comfort-pilot-common\.js\?v=([\d.]+)", js.read_text()):
+            assert ver == VERSION, f"{js.name} imports common v{ver}, expected {VERSION}"

@@ -58,13 +58,42 @@ Motion sensors don't see sleeping people, so bedrooms need a rule like this. A r
 
 After installing, **Comfort Pilot** appears in the sidebar. Everything day-to-day lives there:
 
-- **Overview** – house mode, fresh air, solar budget, forecast, and a card per room showing what it's doing and why, with Auto / Comfort / Eco / Off and *Resume now* after a manual change
+- **Overview** – house mode, fresh air, solar budget, forecast, and a card per room showing what it's doing and why, with Auto / Comfort / Eco / Off and *Resume now* after a manual change. Tap a room to open its thermostat
 - **Rooms** – comfort bands, sensors (sensors in the same area are listed first), solar priority, typical power
 - **Rules** – add, edit, pause or delete schedules
 - **Settings** – thresholds, quiet hours, and which splits and sensors it uses
 - **Log** – everything Comfort Pilot decided and sent, occupancy changes, your manual changes, notifications and errors. Filter by room or type; click a line for the readings at the time
 
 Room, rule and settings changes apply immediately, without restarting the integration. Changing which splits or sensors it uses restarts it (takes a second). Changing configuration needs an admin account; anyone can use the Overview controls.
+
+## Dashboard card
+
+The Overview is also available as a card for any dashboard. Edit a dashboard → **Add card** → search **Comfort Pilot**. It's installed with the integration, so there's nothing extra to add.
+
+| Layout | Shows |
+|---|---|
+| **Full** | House mode, fresh air, energy and weather, and a tile per room with mode buttons |
+| **Compact** | House mode and fresh air on one line, then a short row per room |
+| **Single room** | One room's tile, for a room dashboard |
+
+Choose which rooms to show, whether to include the house controls and the energy/weather line, and an optional title, all in the card's visual editor. Tap any room to open its thermostat. In YAML:
+
+```yaml
+type: custom:comfort-pilot-card
+layout: compact          # full | compact | room
+rooms:                   # optional, defaults to all
+  - climate.office
+  - climate.living
+show_house: true         # optional
+show_stats: false        # optional
+title: Air conditioning  # optional
+```
+
+```yaml
+type: custom:comfort-pilot-card
+layout: room
+room: climate.main_bedroom
+```
 
 ## What you get
 
@@ -108,22 +137,6 @@ If you change a unit yourself (app, dashboard or IR remote), Comfort Pilot leave
 ### Fresh air
 
 When it's at least 2° cooler outside than the indoor average (and inside is 24° or warmer), you get a notification with a **Fresh air mode on** button. While it's on, the splits stay off. When outside becomes warmer than inside, you get a **close up** notification with a button to hand back to the splits. No notifications during quiet hours (22:00–07:00 by default).
-
-## Example dashboard card
-
-```yaml
-type: entities
-title: Comfort Pilot
-entities:
-  - select.comfort_pilot_house_mode
-  - switch.comfort_pilot_fresh_air_mode
-  - sensor.comfort_pilot_solar_budget
-  - type: section
-  - entity: sensor.comfort_pilot_office_status
-    name: Office
-  - entity: sensor.comfort_pilot_bedroom_status
-    name: Bedroom
-```
 
 ## How it decides (every 2 minutes, and straight away on motion)
 
