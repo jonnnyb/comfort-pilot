@@ -1,0 +1,13 @@
+{
+  "domain": "comfort_pilot",
+  "name": "Comfort Pilot",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/YOUR_GITHUB_USERNAME/comfort-pilot",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/YOUR_GITHUB_USERNAME/comfort-pilot/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,178 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Comfort Pilot",
+        "description": "Pick your split systems and where Comfort Pilot gets energy and weather data. Rooms, occupancy sensors and window sensors are detected from your areas automatically – you can adjust them afterwards under Configure.",
+        "data": {
+          "climates": "Split systems",
+          "grid_sensor": "Grid power sensor",
+          "solar_sensor": "Solar production sensor (optional)",
+          "weather": "Weather (outside temperature and forecast)",
+          "outdoor_sensor": "Outdoor temperature sensor (optional)",
+          "notify": "Send notifications to (optional)"
+        },
+        "data_description": {
+          "grid_sensor": "Positive when importing from the grid, negative when exporting solar.",
+          "solar_sensor": "Not needed yet – recorded for future learning.",
+          "outdoor_sensor": "Used instead of the weather entity's temperature if set.",
+          "notify": "Usually your phone, e.g. notify.mobile_app_yourphone. Leave empty to use Home Assistant notifications."
+        }
+      }
+    },
+    "error": {
+      "no_climates": "Pick at least one split system.",
+      "no_outside": "Pick a weather entity or an outdoor temperature sensor.",
+      "bad_notify": "Should look like notify.mobile_app_yourphone."
+    },
+    "abort": {
+      "already_configured": "Comfort Pilot is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Comfort Pilot",
+        "menu_options": {
+          "rooms": "Rooms – comfort bands and sensors",
+          "add_rule": "Add a rule",
+          "remove_rule": "Remove rules",
+          "settings": "Settings",
+          "sources": "Split systems, energy, weather and notifications"
+        }
+      },
+      "rooms": {
+        "title": "Choose a room",
+        "data": { "room": "Room" }
+      },
+      "room_edit": {
+        "title": "{room}",
+        "description": "The comfort band is the range Comfort Pilot works within. With solar to spare it goes to the comfortable end; on grid power it goes to the economy end.",
+        "data": {
+          "name": "Name",
+          "occupancy_sensors": "Motion / presence sensors",
+          "window_sensors": "Window sensors",
+          "cool_min": "Cooling – comfortable end",
+          "cool_max": "Cooling – economy end",
+          "heat_min": "Heating – economy end",
+          "heat_max": "Heating – comfortable end",
+          "priority": "Priority when sharing solar",
+          "est_power": "Typical power while running",
+          "occupancy_timeout": "Stay occupied after last motion"
+        },
+        "data_description": {
+          "window_sensors": "Unit turns off if any is open for more than 2 minutes.",
+          "est_power": "Used to share spare solar between rooms. Roughly what the unit draws once it's settled.",
+          "occupancy_timeout": "Presence sensors use 5 minutes automatically."
+        }
+      },
+      "add_rule": {
+        "title": "Add a rule",
+        "description": "Example: Bedroom, keep comfortable, every day, 21:00 to 06:30, 24°. Windows that end earlier than they start run past midnight.",
+        "data": {
+          "room": "Room",
+          "name": "Name",
+          "action": "What to do",
+          "days": "Days",
+          "start": "From",
+          "end": "Until",
+          "target": "Fixed temperature (optional)"
+        },
+        "data_description": {
+          "target": "Only for 'Keep comfortable'. Leave empty to let solar decide between the comfortable and economy ends."
+        }
+      },
+      "remove_rule": {
+        "title": "Remove rules",
+        "data": { "rules": "Rules to remove" }
+      },
+      "settings": {
+        "title": "Settings",
+        "data": {
+          "cooling_season_above": "Cooling season when today's forecast high is at least",
+          "heating_season_below": "Heating season when today's forecast high is at most",
+          "safety_max": "Always cool rooms hotter than",
+          "safety_min": "Always heat rooms colder than",
+          "solar_margin": "Grid import tolerated before dropping comfort",
+          "precondition_hours": "Pre-cool on spare solar this long before a rule",
+          "hot_day": "Hot day (pre-cool 2 hours earlier) at forecast high of",
+          "fresh_air_delta": "Fresh air alert when outside is cooler by",
+          "fresh_air_min_indoor": "Only send fresh air alerts when inside is at least",
+          "hold_minutes": "Manual changes are respected for",
+          "quiet_start": "No notifications from",
+          "quiet_end": "No notifications until"
+        }
+      },
+      "sources": {
+        "title": "Split systems and sources",
+        "data": {
+          "climates": "Split systems",
+          "grid_sensor": "Grid power sensor",
+          "solar_sensor": "Solar production sensor (optional)",
+          "weather": "Weather (outside temperature and forecast)",
+          "outdoor_sensor": "Outdoor temperature sensor (optional)",
+          "notify": "Send notifications to (optional)"
+        }
+      }
+    },
+    "error": {
+      "no_climates": "Pick at least one split system.",
+      "no_outside": "Pick a weather entity or an outdoor temperature sensor.",
+      "bad_notify": "Should look like notify.mobile_app_yourphone.",
+      "band_order": "The first value must be lower than the second.",
+      "no_days": "Pick at least one day.",
+      "same_time": "Start and end can't be the same."
+    },
+    "abort": {
+      "no_rules": "There are no rules to remove."
+    }
+  },
+  "selector": {
+    "priority": {
+      "options": { "high": "High", "normal": "Normal", "low": "Low" }
+    },
+    "rule_action": {
+      "options": {
+        "comfort": "Keep comfortable",
+        "eco": "Economy only",
+        "off": "Keep off"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "room_status": { "name": "Status" },
+      "house_status": { "name": "Status" },
+      "solar_budget": { "name": "Solar budget" },
+      "season": {
+        "name": "Season",
+        "state": { "cooling": "Cooling", "heating": "Heating", "neutral": "Neutral" }
+      },
+      "indoor_average": { "name": "Indoor average" },
+      "manual_changes": { "name": "Manual changes recorded" }
+    },
+    "select": {
+      "house_mode": {
+        "name": "House mode",
+        "state": {
+          "auto": "Auto",
+          "home": "Home",
+          "away": "Away",
+          "boost": "Boost",
+          "off": "Off",
+          "paused": "Paused"
+        }
+      },
+      "room_mode": {
+        "name": "Mode",
+        "state": { "auto": "Auto", "comfort": "Comfort", "eco": "Eco", "off": "Off" }
+      }
+    },
+    "switch": {
+      "fresh_air": { "name": "Fresh air mode" }
+    },
+    "button": {
+      "resume": { "name": "Resume auto" }
+    }
+  }
+}
