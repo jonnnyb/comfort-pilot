@@ -1,7 +1,15 @@
 {
   "domain": "comfort_pilot",
   "name": "Comfort Pilot",
-  "codeowners": ["@jonnnyb"],
+  "after_dependencies": [
+    "http",
+    "frontend",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "codeowners": [
+    "@jonnnyb"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/jonnnyb/comfort-pilot",
@@ -9,5 +17,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jonnnyb/comfort-pilot/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

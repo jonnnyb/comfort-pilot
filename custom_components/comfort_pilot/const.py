@@ -2,6 +2,7 @@
 
 DOMAIN = "comfort_pilot"
 NAME = "Comfort Pilot"
+VERSION = "0.2.0"
 
 PLATFORMS = ["sensor", "select", "switch", "button"]
 

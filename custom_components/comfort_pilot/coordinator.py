@@ -148,38 +148,8 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self.outdoor_sensor: str | None = data.get(CONF_OUTDOOR_SENSOR)
         self.notify_target: str | None = data.get(CONF_NOTIFY) or None
 
-        room_opts: dict[str, dict] = options.get(OPT_ROOMS, {})
-        self.rooms: dict[str, RoomConfig] = {}
-        self.occupancy_sensors: dict[str, list[str]] = {}
-        self.window_sensors: dict[str, list[str]] = {}
-        for climate_id in self.climates:
-            ro = room_opts.get(climate_id, {})
-            self.rooms[climate_id] = RoomConfig(
-                climate_id=climate_id,
-                name=ro.get(ROOM_NAME) or self._friendly(climate_id),
-                cool_min=float(ro.get(ROOM_COOL_MIN, 23.0)),
-                cool_max=float(ro.get(ROOM_COOL_MAX, 26.0)),
-                heat_min=float(ro.get(ROOM_HEAT_MIN, 18.0)),
-                heat_max=float(ro.get(ROOM_HEAT_MAX, 21.0)),
-                priority=ro.get(ROOM_PRIORITY, "normal"),
-                est_power=float(ro.get(ROOM_POWER, 900)),
-                occupancy_timeout=int(ro.get(ROOM_OCC_TIMEOUT, 20)),
-            )
-            self.occupancy_sensors[climate_id] = list(ro.get(ROOM_OCCUPANCY, []))
-            self.window_sensors[climate_id] = list(ro.get(ROOM_WINDOWS, []))
-
-        self.rules: list[Rule] = []
-        for raw in options.get(OPT_RULES, []):
-            try:
-                self.rules.append(Rule.from_dict(raw))
-            except (KeyError, ValueError) as err:
-                _LOGGER.warning("Skipping invalid rule %s: %s", raw, err)
-
-        raw_settings = dict(options.get(OPT_SETTINGS, {}))
-        self.hold_minutes = int(raw_settings.pop(SET_HOLD_MINUTES, DEFAULT_HOLD_MINUTES))
-        self.quiet_start = parse_time(raw_settings.pop(SET_QUIET_START, DEFAULT_QUIET_START))
-        self.quiet_end = parse_time(raw_settings.pop(SET_QUIET_END, DEFAULT_QUIET_END))
-        self.settings = Settings.from_dict(raw_settings)
+        self.data_snapshot: dict = dict(data)
+        self._load_options(options)
 
         # Runtime state (persisted where it matters)
         self.store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
@@ -201,8 +171,71 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self._advice_sent: str | None = None
         self._last_notified: dict[str, datetime] = {}
         self._unsubs: list = []
+        self._sensor_unsubs: list = []
 
     # ------------------------------------------------------------------ setup
+
+    def _load_options(self, options: dict) -> None:
+        """Parse rooms, rules and settings from the entry options."""
+        room_opts: dict[str, dict] = options.get(OPT_ROOMS, {})
+        self.room_options: dict[str, dict] = room_opts
+        old_rooms = getattr(self, "rooms", {})
+        self.rooms: dict[str, RoomConfig] = {}
+        self.occupancy_sensors: dict[str, list[str]] = {}
+        self.window_sensors: dict[str, list[str]] = {}
+        for climate_id in self.climates:
+            ro = room_opts.get(climate_id, {})
+            self.rooms[climate_id] = RoomConfig(
+                climate_id=climate_id,
+                name=ro.get(ROOM_NAME) or self._friendly(climate_id),
+                cool_min=float(ro.get(ROOM_COOL_MIN, 23.0)),
+                cool_max=float(ro.get(ROOM_COOL_MAX, 26.0)),
+                heat_min=float(ro.get(ROOM_HEAT_MIN, 18.0)),
+                heat_max=float(ro.get(ROOM_HEAT_MAX, 21.0)),
+                priority=ro.get(ROOM_PRIORITY, "normal"),
+                est_power=float(ro.get(ROOM_POWER, 900)),
+                occupancy_timeout=int(ro.get(ROOM_OCC_TIMEOUT, 20)),
+            )
+            self.occupancy_sensors[climate_id] = list(ro.get(ROOM_OCCUPANCY, []))
+            self.window_sensors[climate_id] = list(ro.get(ROOM_WINDOWS, []))
+        self.renamed_rooms = [
+            r for r, cfg in self.rooms.items() if r in old_rooms and old_rooms[r].name != cfg.name
+        ]
+
+        self.rules: list[Rule] = []
+        for raw in options.get(OPT_RULES, []):
+            try:
+                self.rules.append(Rule.from_dict(raw))
+            except (KeyError, ValueError) as err:
+                _LOGGER.warning("Skipping invalid rule %s: %s", raw, err)
+
+        raw_settings = dict(options.get(OPT_SETTINGS, {}))
+        self.hold_minutes = int(raw_settings.pop(SET_HOLD_MINUTES, DEFAULT_HOLD_MINUTES))
+        self.quiet_start = parse_time(raw_settings.pop(SET_QUIET_START, DEFAULT_QUIET_START))
+        self.quiet_end = parse_time(raw_settings.pop(SET_QUIET_END, DEFAULT_QUIET_END))
+        self.settings = Settings.from_dict(raw_settings)
+
+    async def async_apply_options(self, options: dict) -> None:
+        """Apply changed rooms/rules/settings without reloading the integration."""
+        self._load_options(options)
+        self._subscribe_sensors()
+        self._last_setpoint_change.clear()
+        await self.async_refresh()
+
+    def _subscribe_sensors(self) -> None:
+        for unsub in self._sensor_unsubs:
+            unsub()
+        self._sensor_unsubs.clear()
+        occupancy = sorted({e for ents in self.occupancy_sensors.values() for e in ents})
+        if occupancy:
+            self._sensor_unsubs.append(
+                async_track_state_change_event(self.hass, occupancy, self._on_occupancy_change)
+            )
+        windows = sorted({e for ents in self.window_sensors.values() for e in ents})
+        if windows:
+            self._sensor_unsubs.append(
+                async_track_state_change_event(self.hass, windows, self._on_window_change)
+            )
 
     def _friendly(self, entity_id: str) -> str:
         state = self.hass.states.get(entity_id)
@@ -233,16 +266,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self._unsubs.append(
             async_track_state_change_event(hass, self.climates, self._on_climate_change)
         )
-        occupancy = [e for ents in self.occupancy_sensors.values() for e in ents]
-        if occupancy:
-            self._unsubs.append(
-                async_track_state_change_event(hass, occupancy, self._on_occupancy_change)
-            )
-        windows = [e for ents in self.window_sensors.values() for e in ents]
-        if windows:
-            self._unsubs.append(
-                async_track_state_change_event(hass, windows, self._on_window_change)
-            )
+        self._subscribe_sensors()
         persons = hass.states.async_entity_ids("person")
         if persons:
             self._unsubs.append(
@@ -260,9 +284,10 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         )
 
     async def async_unload(self) -> None:
-        for unsub in self._unsubs:
+        for unsub in self._unsubs + self._sensor_unsubs:
             unsub()
         self._unsubs.clear()
+        self._sensor_unsubs.clear()
         await self.store.async_save(self._to_store())
 
     # -------------------------------------------------------------- persistence

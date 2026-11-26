@@ -54,6 +54,18 @@ Motion sensors don't see sleeping people, so bedrooms need a rule like this. Win
 | Economy only | Room may run, but never at the comfortable end |
 | Keep off | Room stays off |
 
+## Control panel
+
+After installing, **Comfort Pilot** appears in the sidebar. Everything day-to-day lives there:
+
+- **Overview** – house mode, fresh air, solar budget, forecast, and a card per room showing what it's doing and why, with Auto / Comfort / Eco / Off and *Resume now* after a manual change
+- **Rooms** – comfort bands, sensors (sensors in the same area are listed first), solar priority, typical power
+- **Rules** – add, edit, pause or delete schedules
+- **Settings** – thresholds, quiet hours, and which splits and sensors it uses
+- **Activity** – your manual changes, the data phase 2 learns from
+
+Room, rule and settings changes apply immediately, without restarting the integration. Changing which splits or sensors it uses restarts it (takes a second). Changing configuration needs an admin account; anyone can use the Overview controls.
+
 ## What you get
 
 **House device**
@@ -113,7 +125,7 @@ entities:
 ## Roadmap
 
 - **Phase 2** – learned occupancy patterns and rules from your manual changes (editable lists), learned room warm-up/cool-down rates for smarter pre-cooling, learned power draw per unit
-- **Phase 3** – sidebar panel for rules and learnings, weekly solar vs grid summary
+- **Phase 3** – weekly solar vs grid summary
 
 ## Development
 
