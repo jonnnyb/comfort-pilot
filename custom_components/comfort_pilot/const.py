@@ -2,7 +2,7 @@
 
 DOMAIN = "comfort_pilot"
 NAME = "Comfort Pilot"
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 PLATFORMS = ["sensor", "select", "switch", "button"]
 
@@ -63,3 +63,10 @@ ACTION_FRESH_AIR_OFF = "COMFORT_PILOT_FRESH_AIR_OFF"
 NOTIFY_TAG = "comfort_pilot_fresh_air"
 
 STORAGE_VERSION = 1
+
+# Temperature reading checks
+TEMP_JUMP_LIMIT = 3.0  # °C change between readings that's treated as suspect
+TEMP_CONFIRM_SECONDS = 300  # a suspect reading must hold this long to be believed
+TEMP_STALE_SECONDS = 900  # after this long without a reading, accept whatever comes
+SAFETY_CONFIRM_SECONDS = 300  # past the safety limit this long before acting
+SAFETY_RELEASE_MARGIN = 2.0  # safety stays on until this far back inside the limit

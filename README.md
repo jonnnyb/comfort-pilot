@@ -126,6 +126,14 @@ room: climate.main_bedroom
 
 A unit only starts once its room is 0.5° past the setpoint (warmer when cooling, colder when heating), and stops once the room is 1.5° beyond it the other way. So an occupied room that's already comfortable stays off, and a running unit isn't switched off the moment it reaches temperature. Both margins are in Settings.
 
+### Safety limits and odd readings
+
+Rooms above 32° are cooled (and below 12° heated) even when nobody's home or a rule says to keep them off – safety always wins. To stop a glitch from triggering it:
+
+- The room has to stay past the limit for 5 minutes before safety acts, and safety then stays on until the room is 2° back inside the limit.
+- A reading more than 3° away from the previous one is ignored unless it holds for 5 minutes. Ignored readings are noted in the Log.
+- When a safety run ends, the unit can switch off straight away – the minimum run time doesn't hold it on.
+
 ### Protecting the units
 
 Once Comfort Pilot turns a unit on it keeps it running for at least 10 minutes, and once off it stays off for at least 5 (both adjustable in Settings). Window open, fresh air mode, Off, Away and safety limits still act straight away, and so do your own mode changes.

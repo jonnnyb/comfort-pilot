@@ -209,6 +209,10 @@ class RoomState:
     occupancy_pending: bool = False  # motion seen, waiting to confirm
     last_occupied: datetime | None = None
     window_open: bool = False
+    # Set by the coordinator once a reading has stayed past the safety limit long
+    # enough to trust. None = decide from current_temp alone (used in tests).
+    safety_hot: bool | None = None
+    safety_cold: bool | None = None
     room_mode: str = ROOM_AUTO
     hold_until: datetime | None = None
     last_level: str | None = None  # level chosen on the previous run
@@ -432,12 +436,14 @@ def decide(
             continue
 
         t = st.current_temp
+        hot = st.safety_hot if st.safety_hot is not None else (t is not None and t >= settings.safety_max)
+        cold = st.safety_cold if st.safety_cold is not None else (t is not None and t <= settings.safety_min)
         if t is not None and not st.window_open:
-            if t >= settings.safety_max and HVAC_COOL in st.hvac_modes:
+            if hot and HVAC_COOL in st.hvac_modes:
                 done(HVAC_COOL, LEVEL_SAFETY, f"Safety: room at {_fmt_t(t)}",
                      _setpoint(HVAC_COOL, LEVEL_SAFETY, cfg, st, None), forced=True)
                 continue
-            if t <= settings.safety_min and HVAC_HEAT in st.hvac_modes:
+            if cold and HVAC_HEAT in st.hvac_modes:
                 done(HVAC_HEAT, LEVEL_SAFETY, f"Safety: room at {_fmt_t(t)}",
                      _setpoint(HVAC_HEAT, LEVEL_SAFETY, cfg, st, None), forced=True)
                 continue

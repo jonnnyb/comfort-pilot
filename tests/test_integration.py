@@ -499,3 +499,83 @@ async def test_log_and_occupancy_survive_restart(hass, world):
     await hass.async_block_till_done()
     c2 = entry.runtime_data
     assert c2._confirmed.get(OFFICE) and len(c2.log) >= n
+
+
+# --- reading glitches and safety (v0.4.1) -----------------------------------
+
+def _set_temp(hass, entity_id, temp):
+    st = hass.states.get(entity_id)
+    hass.states.async_set(entity_id, st.state, {**st.attributes, "current_temperature": temp})
+
+
+KEEP_OFF_ALL_DAY = {
+    "id": "off", "rooms": [BEDROOM], "name": "Keep master bedroom off during the day",
+    "days": list(range(7)), "start": "00:00:00", "end": "23:59:00", "action": "off",
+}
+
+
+async def test_one_off_spike_is_ignored(hass, world, freezer):
+    """The incident: a single 37° reading switched the bedroom on despite a Keep off rule."""
+    world.set_unit(BEDROOM, mode="off", current=24.5)
+    c = await setup(hass, make_entry(rules=[KEEP_OFF_ALL_DAY]))
+    assert hass.states.get(BEDROOM).state == "off"
+    _set_temp(hass, BEDROOM, 37)
+    await hass.async_block_till_done()
+    await c.async_refresh()
+    assert hass.states.get(BEDROOM).state == "off"
+    assert any("Ignoring unusual room temperature 37°" in e["message"] for e in c.log)
+    assert c.data.room_states[BEDROOM].current_temp == 24.5
+    # Back to normal two minutes later.
+    freezer.tick(timedelta(minutes=2))
+    _set_temp(hass, BEDROOM, 24.5)
+    await hass.async_block_till_done()
+    await _tick(hass, freezer, c, 10)
+    assert hass.states.get(BEDROOM).state == "off"
+    assert not any(e["category"] == "action" and e.get("room") == BEDROOM for e in c.log)
+
+
+async def test_sustained_heat_still_triggers_safety(hass, world, freezer):
+    world.set_unit(BEDROOM, mode="off", current=31.0)
+    c = await setup(hass, make_entry(rules=[KEEP_OFF_ALL_DAY]))
+    _set_temp(hass, BEDROOM, 33.0)  # small step from 31: trusted straight away
+    await hass.async_block_till_done()
+    await c.async_refresh()
+    assert hass.states.get(BEDROOM).state == "off"  # not yet – needs to persist
+    await _tick(hass, freezer, c, 3)
+    assert hass.states.get(BEDROOM).state == "off"
+    await _tick(hass, freezer, c, 3)  # 6 minutes past the limit
+    assert hass.states.get(BEDROOM).state == "cool"
+    assert hass.states.get(BEDROOM).attributes["temperature"] == 26.0
+    # Safety wins over the Keep off rule, and stays on until the room is back under 30°.
+    _set_temp(hass, BEDROOM, 31.0)
+    await _tick(hass, freezer, c, 2)
+    assert hass.states.get(BEDROOM).state == "cool"
+
+
+async def test_unit_stops_right_after_safety_ends(hass, world, freezer):
+    world.set_unit(BEDROOM, mode="off", current=31.0)
+    c = await setup(hass, make_entry(rules=[KEEP_OFF_ALL_DAY], settings={"min_run_minutes": 30}))
+    _set_temp(hass, BEDROOM, 33.0)
+    await hass.async_block_till_done()
+    for _ in range(3):
+        await _tick(hass, freezer, c, 2)
+    assert hass.states.get(BEDROOM).state == "cool"
+    # Room cools quickly; once it's back under 30° the Keep off rule applies at once,
+    # without waiting out the 30-minute minimum run.
+    for temp in (31.0, 29.5):
+        _set_temp(hass, BEDROOM, temp)
+        await _tick(hass, freezer, c, 2)
+    assert hass.states.get(BEDROOM).state == "off"
+
+
+async def test_genuine_big_change_is_accepted_after_it_holds(hass, world, freezer):
+    world.set_unit(OFFICE, mode="off", current=27.0)
+    c = await setup(hass, make_entry())
+    _set_temp(hass, OFFICE, 22.0)
+    await hass.async_block_till_done()
+    await c.async_refresh()
+    assert c.data.room_states[OFFICE].current_temp == 27.0
+    for _ in range(3):
+        await _tick(hass, freezer, c, 2)
+    assert c.data.room_states[OFFICE].current_temp == 22.0
+    assert any("confirmed at 22°" in e["message"] for e in c.log)

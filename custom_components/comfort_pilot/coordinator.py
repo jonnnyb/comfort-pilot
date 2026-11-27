@@ -56,6 +56,11 @@ from .const import (
     OPT_RULES,
     OPT_SETTINGS,
     OWN_CHANGE_GRACE_SECONDS,
+    SAFETY_CONFIRM_SECONDS,
+    SAFETY_RELEASE_MARGIN,
+    TEMP_CONFIRM_SECONDS,
+    TEMP_JUMP_LIMIT,
+    TEMP_STALE_SECONDS,
     ROOM_COOL_MAX,
     ROOM_COOL_MIN,
     ROOM_HEAT_MAX,
@@ -86,6 +91,7 @@ from .engine import (
     LEVEL_HOLD,
     LEVEL_OFF,
     LEVEL_PAUSED,
+    LEVEL_SAFETY,
     ROOM_AUTO,
     ROOM_MODES,
     SEASON_NEUTRAL,
@@ -180,6 +186,10 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         self._unit_on_at: dict[str, datetime] = {}
         self._unit_off_at: dict[str, datetime] = {}
         self._logged: dict[str, tuple] = {}
+        self._accepted_temp: dict[str, tuple[float, datetime]] = {}
+        self._suspect_temp: dict[str, tuple[float, datetime, float]] = {}
+        self._safety_since: dict[str, tuple[str, datetime]] = {}
+        self._safety_active: dict[str, str] = {}
         self.log: list[dict] = []
         self._last_level: dict[str, str] = {}
         self._expected: dict[str, Expected] = {}
@@ -431,6 +441,11 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         new: State | None = event.data.get("new_state")
         if entity_id not in self.rooms or old is None or new is None:
             return
+        if new.state not in BAD_STATES:
+            raw = _float(new.attributes.get("current_temperature"))
+            if raw is not None:
+                now = dt_util.now()
+                self._safety_flags(entity_id, self._filter_temp(entity_id, raw, now), now)
         if old.state in BAD_STATES or new.state in BAD_STATES:
             return
         if old.state == HVAC_OFF and new.state != HVAC_OFF:
@@ -590,7 +605,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
         a = state.attributes
         st = RoomState(
             available=True,
-            current_temp=_float(a.get("current_temperature")),
+            current_temp=self._filter_temp(room, _float(a.get("current_temperature")), now),
             hvac_mode=state.state,
             target=_float(a.get(ATTR_TEMPERATURE)),
             hvac_modes=list(a.get("hvac_modes", [])),
@@ -616,6 +631,7 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
             # resets when Home Assistant restarts, so it can't be trusted).
             st.last_occupied = self._last_motion.get(room) if confirmed else None
             st.occupancy_pending = not confirmed and room in self._visit_start
+        st.safety_hot, st.safety_cold = self._safety_flags(room, st.current_temp, now)
         windows = [self.hass.states.get(e) for e in self.window_sensors.get(room, [])]
         st.window_open = any(
             w is not None
@@ -663,13 +679,83 @@ class ComfortPilotCoordinator(DataUpdateCoordinator[PilotData]):
                 self._visit_start.pop(room, None)
                 self._log("occupancy", "Motion didn't continue – ignored", room)
 
+    # ---------------------------------------------------- temperature checks
+
+    def _filter_temp(self, room: str, raw: float | None, now: datetime) -> float | None:
+        """Ignore one-off jumps: a reading far from the last trusted one has to
+        hold steady for a few minutes before it's believed."""
+        if raw is None:
+            accepted = self._accepted_temp.get(room)
+            return accepted[0] if accepted else None
+        accepted = self._accepted_temp.get(room)
+        if (
+            accepted is None
+            or abs(raw - accepted[0]) <= TEMP_JUMP_LIMIT
+            or (now - accepted[1]).total_seconds() > TEMP_STALE_SECONDS
+        ):
+            self._accepted_temp[room] = (raw, now)
+            self._suspect_temp.pop(room, None)
+            return raw
+        suspect = self._suspect_temp.get(room)
+        if suspect is not None and abs(raw - suspect[2]) <= 1.5:
+            if (now - suspect[1]).total_seconds() >= TEMP_CONFIRM_SECONDS:
+                self._log("system", f"Room temperature confirmed at {raw:g}° (was {accepted[0]:g}°)", room)
+                self._accepted_temp[room] = (raw, now)
+                self._suspect_temp.pop(room, None)
+                return raw
+            self._suspect_temp[room] = (suspect[0], suspect[1], raw)
+            return accepted[0]
+        self._suspect_temp[room] = (raw, now, raw)
+        self._log(
+            "system",
+            f"Ignoring unusual room temperature {raw:g}° (last reading {accepted[0]:g}°) unless it holds for "
+            f"{TEMP_CONFIRM_SECONDS // 60} min",
+            room,
+        )
+        return accepted[0]
+
+    def _safety_flags(self, room: str, temp: float | None, now: datetime) -> tuple[bool, bool]:
+        """Safety only acts once the room has stayed past the limit, and stays on
+        until it's comfortably back inside it."""
+        s = self.settings
+        active = self._safety_active.get(room)
+        if temp is None:
+            return active == "hot", active == "cold"
+        if active == "hot" and temp < s.safety_max - SAFETY_RELEASE_MARGIN:
+            active = None
+        elif active == "cold" and temp > s.safety_min + SAFETY_RELEASE_MARGIN:
+            active = None
+        if active is None:
+            side = "hot" if temp >= s.safety_max else "cold" if temp <= s.safety_min else None
+            since = self._safety_since.get(room)
+            if side is None:
+                self._safety_since.pop(room, None)
+            elif since is None or since[0] != side:
+                self._safety_since[room] = (side, now)
+                limit = s.safety_max if side == "hot" else s.safety_min
+                self._log(
+                    "system",
+                    f"Room at {temp:g}° is past the safety limit ({limit:g}°) – acting if it stays there for "
+                    f"{SAFETY_CONFIRM_SECONDS // 60} min",
+                    room,
+                )
+            elif (now - since[1]).total_seconds() >= SAFETY_CONFIRM_SECONDS:
+                active = side
+                self._safety_since.pop(room, None)
+        if active:
+            self._safety_active[room] = active
+        else:
+            self._safety_active.pop(room, None)
+        return active == "hot", active == "cold"
+
     # ------------------------------------------------------- cycle protection
 
     def _protect(self, room: str, d: Decision, st: RoomState, now: datetime) -> Decision:
         """Avoid switching a unit on and off too often."""
         if d.forced or d.hvac_mode is None or not st.available:
             return d
-        if d.hvac_mode == HVAC_OFF and st.running:
+        if d.hvac_mode == HVAC_OFF and st.running and self._last_level.get(room) != LEVEL_SAFETY:
+            # (A unit started by a safety limit can stop as soon as that's over.)
             on_at = self._unit_on_at.get(room)
             if on_at and now - on_at < timedelta(minutes=self.min_run):
                 until = (on_at + timedelta(minutes=self.min_run)).strftime("%H:%M")

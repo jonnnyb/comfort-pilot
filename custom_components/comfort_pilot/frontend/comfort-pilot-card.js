@@ -2,7 +2,7 @@
 
 import {
   BASE_STYLES, actionMessage, esc, fireMoreInfo, renderHouse, renderHouseCompact, renderRoomRow, renderRoomTile,
-} from "./comfort-pilot-common.js?v=0.4.0";
+} from "./comfort-pilot-common.js?v=0.4.1";
 
 const LAYOUTS = {
   full: { label: "Full", help: "House controls and a tile per room, like the panel's Overview" },

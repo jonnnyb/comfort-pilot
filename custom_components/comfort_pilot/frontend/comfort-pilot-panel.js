@@ -2,7 +2,7 @@
 
 import {
   BASE_STYLES, LEVEL_LABELS, actionMessage, esc, fireMoreInfo, fmtT, fmtW, renderHouse, renderRoomTile, when,
-} from "./comfort-pilot-common.js?v=0.4.0";
+} from "./comfort-pilot-common.js?v=0.4.1";
 
 const TABS = [
   ["overview", "Overview"],
